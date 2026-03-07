@@ -1,12 +1,17 @@
 """
-Order & Payment routes + Sync endpoints.
+Order, Payment, and Sync routes.
 
-POST /orders             → create an order (online POS)
-GET  /orders             → list orders for a store
-PUT  /orders/{id}/complete → mark order completed
-POST /orders/payments    → record a payment
-POST /sync/orders        → bulk-sync offline orders
-POST /sync/payments      → bulk-sync offline payments
+POST   /orders                    → create order
+GET    /orders                    → list orders (store_id, filters)
+GET    /orders/{id}               → get single order
+PUT    /orders/{id}               → update order (add/remove items)
+PUT    /orders/{id}/status        → advance order status
+PUT    /orders/{id}/cancel        → cancel order
+PUT    /orders/{id}/transfer      → transfer table/waiter
+POST   /orders/payments           → record a payment
+POST   /orders/payments/refund    → issue refund
+POST   /sync/orders               → bulk-sync offline orders
+POST   /sync/payments             → bulk-sync offline payments
 """
 
 from uuid import UUID
@@ -22,14 +27,24 @@ from app.models.users import User
 from app.schemas.order_schema import (
     OrderCreate,
     OrderResponse,
-    OrderComplete,
+    OrderStatusUpdate,
+    OrderCancelRequest,
+    OrderTransferRequest,
     PaymentCreate,
     PaymentResponse,
+    RefundRequest,
     SyncOrdersRequest,
     SyncPaymentsRequest,
     SyncResponse,
 )
-from app.services.order_service import create_order
+from app.services.order_service import (
+    create_order,
+    update_order_status,
+    cancel_order,
+    transfer_order,
+    create_payment,
+    create_refund,
+)
 from app.services.sync_service import sync_orders, sync_payments
 from app.utils.auth import get_current_user
 
@@ -50,11 +65,31 @@ async def api_create_order(
     _: User = Depends(get_current_user),
 ):
     order = await create_order(db, payload)
-    # Eager-load items for the response
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order.id)
     )
     return result.scalar_one()
+
+
+# ── Get single order ─────────────────────────────────────────────────────
+
+@router.get(
+    "/orders/{order_id}",
+    response_model=OrderResponse,
+    summary="Get a single order by ID",
+)
+async def get_order(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    return order
 
 
 # ── List orders ───────────────────────────────────────────────────────────
@@ -62,11 +97,16 @@ async def api_create_order(
 @router.get(
     "/orders",
     response_model=list[OrderResponse],
-    summary="List orders for a store",
+    summary="List orders for a store with optional filters",
 )
 async def list_orders(
     store_id: UUID = Query(...),
     payment_status: str | None = Query(None),
+    order_status: str | None = Query(None, alias="status"),
+    order_type: str | None = Query(None),
+    channel: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -77,22 +117,28 @@ async def list_orders(
     )
     if payment_status:
         query = query.where(Order.payment_status == payment_status)
-    query = query.order_by(Order.created_at.desc())
+    if order_status:
+        query = query.where(Order.status == order_status)
+    if order_type:
+        query = query.where(Order.order_type == order_type)
+    if channel:
+        query = query.where(Order.channel == channel)
+    query = query.order_by(Order.created_at.desc()).limit(limit).offset(offset)
 
     result = await db.execute(query)
     return result.scalars().unique().all()
 
 
-# ── Complete order ────────────────────────────────────────────────────────
+# ── Update order status ──────────────────────────────────────────────────
 
 @router.put(
-    "/orders/{order_id}/complete",
+    "/orders/{order_id}/status",
     response_model=OrderResponse,
-    summary="Mark an order as completed",
+    summary="Advance order through its lifecycle",
 )
-async def complete_order(
+async def api_update_order_status(
     order_id: UUID,
-    payload: OrderComplete,
+    payload: OrderStatusUpdate,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -102,9 +148,59 @@ async def complete_order(
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    try:
+        order = await update_order_status(db, order, payload.status)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return order
 
-    order.payment_status = payload.payment_status
-    await db.flush()
+
+# ── Cancel order ──────────────────────────────────────────────────────────
+
+@router.put(
+    "/orders/{order_id}/cancel",
+    response_model=OrderResponse,
+    summary="Cancel an order",
+)
+async def api_cancel_order(
+    order_id: UUID,
+    payload: OrderCancelRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    try:
+        order = await cancel_order(db, order, payload.reason, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return order
+
+
+# ── Transfer order ────────────────────────────────────────────────────────
+
+@router.put(
+    "/orders/{order_id}/transfer",
+    response_model=OrderResponse,
+    summary="Transfer order to another table or waiter",
+)
+async def api_transfer_order(
+    order_id: UUID,
+    payload: OrderTransferRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    order = await transfer_order(db, order, payload)
     return order
 
 
@@ -116,28 +212,31 @@ async def complete_order(
     status_code=status.HTTP_201_CREATED,
     summary="Record a payment for an order",
 )
-async def create_payment(
+async def api_create_payment(
     payload: PaymentCreate,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    # Verify order exists
     order_result = await db.execute(select(Order).where(Order.id == payload.order_id))
-    order = order_result.scalar_one_or_none()
-    if not order:
+    if not order_result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    return await create_payment(db, payload)
 
-    payment = Payment(
-        order_id=payload.order_id,
-        payment_method=payload.payment_method,
-        amount=float(payload.amount),
-    )
-    db.add(payment)
 
-    # Auto-mark the order as completed
-    order.payment_status = "completed"
-    await db.flush()
-    return payment
+# ── Refund ────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/orders/payments/refund",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Issue a refund against a payment",
+)
+async def api_create_refund(
+    payload: RefundRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return await create_refund(db, payload)
 
 
 # ── Sync: offline orders ─────────────────────────────────────────────────

@@ -21,6 +21,17 @@ from app.routers import (
     product_routes,
     order_routes,
     analytics_routes,
+    menu_routes,
+    inventory_routes,
+    purchasing_routes,
+    delivery_routes,
+    shift_routes,
+    billing_routes,
+    guest_routes,
+    ledger_routes,
+    integration_routes,
+    marketing_routes,
+    audit_routes,
 )
 
 settings = get_settings()
@@ -46,11 +57,21 @@ app = FastAPI(
     description=(
         "Production-grade REST API for a multi-tenant restaurant POS SaaS platform.\n\n"
         "Supports:\n"
-        "- Multi-store management per owner\n"
+        "- Multi-store & chain management per owner\n"
+        "- Menu & pricing management with schedules\n"
         "- Product/category catalogue\n"
-        "- Order lifecycle & payments\n"
+        "- Order lifecycle, status transitions & payments\n"
+        "- Table management, merges, transfers\n"
+        "- Delivery management & aggregator integrations\n"
+        "- Kitchen order tickets (KOT) & invoicing\n"
+        "- Shift management & day-close reports\n"
+        "- Inventory, recipes, stock transfers & purchasing\n"
+        "- Tax groups, city ledger & accounting\n"
+        "- Guest CRM & loyalty\n"
+        "- Marketing campaigns\n"
         "- Offline POS sync\n"
-        "- Analytical dashboard queries"
+        "- Analytical dashboard & reporting\n"
+        "- Audit logging"
     ),
     docs_url="/docs",       # Swagger UI
     redoc_url="/redoc",     # ReDoc alternative
@@ -73,6 +94,17 @@ app.include_router(employee_routes.router)
 app.include_router(product_routes.router)
 app.include_router(order_routes.router)
 app.include_router(analytics_routes.router)
+app.include_router(menu_routes.router)
+app.include_router(inventory_routes.router)
+app.include_router(purchasing_routes.router)
+app.include_router(delivery_routes.router)
+app.include_router(shift_routes.router)
+app.include_router(billing_routes.router)
+app.include_router(guest_routes.router)
+app.include_router(ledger_routes.router)
+app.include_router(integration_routes.router)
+app.include_router(marketing_routes.router)
+app.include_router(audit_routes.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────
