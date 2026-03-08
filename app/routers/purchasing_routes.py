@@ -5,12 +5,13 @@ Purchasing routes – vendors, purchase orders, receipts.
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models.purchasing import Vendor, PurchaseOrder
+from app.models.purchasing import Vendor, PurchaseOrder, PurchaseOrderLine
 from app.models.users import User
 from app.schemas.purchasing_schema import (
     VendorCreate,
@@ -141,3 +142,50 @@ async def api_receive_purchase(
     current_user: User = Depends(get_current_user),
 ):
     return await receive_purchase(db, payload, received_by=current_user.id)
+
+
+# ── Pending Purchase Summary ──────────────────────────────────────────────
+
+class PendingPurchaseSummaryItem(BaseModel):
+    store_id: UUID
+    vendor_id: UUID | None
+    vendor_name: str | None
+    pending_orders_count: int
+    total_pending_amount: float
+
+
+@router.get("/pending-summary", response_model=list[PendingPurchaseSummaryItem])
+async def api_pending_purchase_summary(
+    store_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Aggregated summary of pending purchase orders grouped by vendor.
+    """
+    q = (
+        select(
+            PurchaseOrder.store_id,
+            PurchaseOrder.vendor_id,
+            Vendor.name.label("vendor_name"),
+            func.count(PurchaseOrder.id).label("pending_orders_count"),
+            func.coalesce(func.sum(PurchaseOrder.total_amount), 0).label("total_pending_amount"),
+        )
+        .outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id)
+        .where(
+            PurchaseOrder.store_id == store_id,
+            PurchaseOrder.status == "pending",
+        )
+        .group_by(PurchaseOrder.store_id, PurchaseOrder.vendor_id, Vendor.name)
+    )
+    result = await db.execute(q)
+    return [
+        PendingPurchaseSummaryItem(
+            store_id=row.store_id,
+            vendor_id=row.vendor_id,
+            vendor_name=row.vendor_name,
+            pending_orders_count=row.pending_orders_count,
+            total_pending_amount=float(row.total_pending_amount),
+        )
+        for row in result.all()
+    ]

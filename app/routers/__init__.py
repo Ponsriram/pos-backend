@@ -18,4 +18,10 @@ from app.routers import (  # noqa: F401
     integration_routes,
     marketing_routes,
     audit_routes,
+    user_routes,
+    chain_routes,
+    group_routes,
+    notification_routes,
+    zone_routes,
+    report_routes,
 )

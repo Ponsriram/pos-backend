@@ -10,11 +10,13 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.orders import Order, Payment
+from app.models.stores import Store
 from app.models.users import User
 from app.schemas.order_schema import AnalyticsSummary
 from app.utils.auth import get_current_user
@@ -106,4 +108,127 @@ async def get_summary(
             "card": float(pay_row.card),
             "upi": float(pay_row.upi),
         },
+    )
+
+
+# ── Multi-Store Analytics ─────────────────────────────────────────────────
+
+class OutletStat(BaseModel):
+    store_id: UUID
+    store_name: str
+    total_revenue: float
+    total_orders: int
+    tax_collected: float
+    gross_sales: float
+    net_sales: float
+    total_discounts: float
+    payment_breakdown: dict[str, float]
+
+
+class OutletAnalyticsResponse(BaseModel):
+    outlets: list[OutletStat]
+    totals: AnalyticsSummary
+
+
+@router.get(
+    "/summary/by-store",
+    response_model=OutletAnalyticsResponse,
+    summary="Per-store analytics breakdown for all stores owned by the user",
+)
+async def get_summary_by_store(
+    start_date: date | None = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: date | None = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns per-store financial metrics for all stores
+    owned by the authenticated user, plus an aggregate total.
+    """
+    # Fetch all user stores
+    stores_result = await db.execute(
+        select(Store).where(Store.owner_id == current_user.id)
+    )
+    stores = stores_result.scalars().all()
+
+    outlets: list[OutletStat] = []
+    agg_revenue = agg_orders = agg_tax = agg_gross = agg_net = agg_disc = 0.0
+    agg_cash = agg_card = agg_upi = 0.0
+
+    for store in stores:
+        filters = [
+            Order.store_id == store.id,
+            Order.payment_status == "completed",
+        ]
+        if start_date:
+            filters.append(
+                Order.created_at >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
+            )
+        if end_date:
+            filters.append(
+                Order.created_at < datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+            )
+
+        order_q = select(
+            func.coalesce(func.sum(Order.net_amount), 0).label("total_revenue"),
+            func.count(Order.id).label("total_orders"),
+            func.coalesce(func.sum(Order.tax_amount), 0).label("tax_collected"),
+            func.coalesce(func.sum(Order.gross_amount), 0).label("gross_sales"),
+            func.coalesce(func.sum(Order.net_amount), 0).label("net_sales"),
+            func.coalesce(func.sum(Order.discount_amount), 0).label("total_discounts"),
+        ).where(*filters)
+
+        result = await db.execute(order_q)
+        row = result.one()
+
+        pay_q = (
+            select(
+                func.coalesce(func.sum(case((Payment.payment_method == "cash", Payment.amount), else_=0)), 0).label("cash"),
+                func.coalesce(func.sum(case((Payment.payment_method == "card", Payment.amount), else_=0)), 0).label("card"),
+                func.coalesce(func.sum(case((Payment.payment_method == "upi", Payment.amount), else_=0)), 0).label("upi"),
+            )
+            .join(Order, Payment.order_id == Order.id)
+            .where(*filters)
+        )
+        pay_result = await db.execute(pay_q)
+        pay_row = pay_result.one()
+
+        stat = OutletStat(
+            store_id=store.id,
+            store_name=store.name,
+            total_revenue=float(row.total_revenue),
+            total_orders=int(row.total_orders),
+            tax_collected=float(row.tax_collected),
+            gross_sales=float(row.gross_sales),
+            net_sales=float(row.net_sales),
+            total_discounts=float(row.total_discounts),
+            payment_breakdown={
+                "cash": float(pay_row.cash),
+                "card": float(pay_row.card),
+                "upi": float(pay_row.upi),
+            },
+        )
+        outlets.append(stat)
+
+        agg_revenue += stat.total_revenue
+        agg_orders += stat.total_orders
+        agg_tax += stat.tax_collected
+        agg_gross += stat.gross_sales
+        agg_net += stat.net_sales
+        agg_disc += stat.total_discounts
+        agg_cash += float(pay_row.cash)
+        agg_card += float(pay_row.card)
+        agg_upi += float(pay_row.upi)
+
+    return OutletAnalyticsResponse(
+        outlets=outlets,
+        totals=AnalyticsSummary(
+            total_revenue=agg_revenue,
+            total_orders=int(agg_orders),
+            tax_collected=agg_tax,
+            gross_sales=agg_gross,
+            net_sales=agg_net,
+            total_discounts=agg_disc,
+            payment_breakdown={"cash": agg_cash, "card": agg_card, "upi": agg_upi},
+        ),
     )

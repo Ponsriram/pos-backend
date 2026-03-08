@@ -23,6 +23,7 @@ from app.models.stores import Store, POSTerminal, DineInTable, Expense
 from app.models.users import User
 from app.schemas.user_schema import (
     StoreCreate,
+    StoreUpdate,
     StoreResponse,
     POSTerminalCreate,
     POSTerminalResponse,
@@ -51,8 +52,7 @@ async def create_store(
 ):
     store = Store(
         owner_id=current_user.id,
-        name=payload.name,
-        location=payload.location,
+        **payload.model_dump(),
     )
     db.add(store)
     await db.flush()
@@ -74,6 +74,52 @@ async def list_stores(
         select(Store).where(Store.owner_id == current_user.id).order_by(Store.created_at.desc())
     )
     return result.scalars().all()
+
+
+# ── Get single store ──────────────────────────────────────────────────────
+
+@router.get(
+    "/{store_id}",
+    response_model=StoreResponse,
+    summary="Get a single store by ID",
+)
+async def get_store(
+    store_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
+    )
+    store = result.scalar_one_or_none()
+    if not store:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    return store
+
+
+# ── Update store ──────────────────────────────────────────────────────────
+
+@router.put(
+    "/{store_id}",
+    response_model=StoreResponse,
+    summary="Update a store's details",
+)
+async def update_store(
+    store_id: UUID,
+    payload: StoreUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
+    )
+    store = result.scalar_one_or_none()
+    if not store:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(store, field, value)
+    await db.flush()
+    return store
 
 
 # ── POS Terminal ──────────────────────────────────────────────────────────

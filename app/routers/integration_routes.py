@@ -3,13 +3,17 @@ Integration routes – aggregator configs, store links, and webhooks.
 """
 
 from uuid import UUID
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.integrations import AggregatorConfig, AggregatorStoreLink, AggregatorOrder
+from app.models.integrations import (
+    AggregatorConfig, AggregatorStoreLink, AggregatorOrder, IntegrationLog,
+)
 from app.models.users import User
 from app.schemas.integration_schema import (
     AggregatorConfigCreate,
@@ -164,3 +168,146 @@ async def aggregator_webhook(
     db.add(order)
     await db.flush()
     return {"status": "received", "id": str(order.id)}
+
+
+# ── Integration Logs ──────────────────────────────────────────────────────
+
+class IntegrationLogResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    aggregator_id: UUID | None
+    log_type: str
+    action: str
+    status: str
+    entity_type: str | None
+    entity_id: UUID | None
+    details: dict | None
+    error_message: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/logs/menu-triggers", response_model=list[IntegrationLogResponse])
+async def list_menu_trigger_logs(
+    store_id: UUID = Query(...),
+    aggregator_id: UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Logs of menu push/sync actions to aggregator platforms."""
+    q = select(IntegrationLog).where(
+        IntegrationLog.store_id == store_id,
+        IntegrationLog.log_type == "menu_trigger",
+    )
+    if aggregator_id:
+        q = q.where(IntegrationLog.aggregator_id == aggregator_id)
+    q = q.order_by(IntegrationLog.created_at.desc()).limit(limit).offset(offset)
+    result = await db.execute(q)
+    return result.scalars().all()
+
+
+@router.get("/logs/items", response_model=list[IntegrationLogResponse])
+async def list_item_logs(
+    store_id: UUID = Query(...),
+    aggregator_id: UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Item-level sync history with aggregator platforms."""
+    q = select(IntegrationLog).where(
+        IntegrationLog.store_id == store_id,
+        IntegrationLog.log_type == "item_sync",
+    )
+    if aggregator_id:
+        q = q.where(IntegrationLog.aggregator_id == aggregator_id)
+    q = q.order_by(IntegrationLog.created_at.desc()).limit(limit).offset(offset)
+    result = await db.execute(q)
+    return result.scalars().all()
+
+
+@router.get("/logs/stores", response_model=list[IntegrationLogResponse])
+async def list_store_logs(
+    store_id: UUID = Query(...),
+    aggregator_id: UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Store status change history on aggregator platforms."""
+    q = select(IntegrationLog).where(
+        IntegrationLog.store_id == store_id,
+        IntegrationLog.log_type == "store_status",
+    )
+    if aggregator_id:
+        q = q.where(IntegrationLog.aggregator_id == aggregator_id)
+    q = q.order_by(IntegrationLog.created_at.desc()).limit(limit).offset(offset)
+    result = await db.execute(q)
+    return result.scalars().all()
+
+
+# ── Store Status Tracking ─────────────────────────────────────────────────
+
+class AggregatorStoreStatus(BaseModel):
+    aggregator_id: UUID
+    aggregator_code: str
+    aggregator_name: str
+    store_id: UUID
+    external_store_id: str
+    is_online: bool
+    is_enabled: bool
+
+
+@router.get("/store-status", response_model=list[AggregatorStoreStatus])
+async def get_store_status(
+    store_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Per-aggregator online/offline state for a store.
+    Based on the latest store_status integration log per aggregator,
+    or falls back to the store link's is_enabled flag.
+    """
+    # Get all store links with their aggregator info
+    result = await db.execute(
+        select(AggregatorStoreLink, AggregatorConfig)
+        .join(AggregatorConfig, AggregatorStoreLink.aggregator_id == AggregatorConfig.id)
+        .where(AggregatorStoreLink.store_id == store_id)
+    )
+    rows = result.all()
+
+    statuses = []
+    for link, agg in rows:
+        # Check the latest store_status log for this aggregator + store
+        log_result = await db.execute(
+            select(IntegrationLog)
+            .where(
+                IntegrationLog.store_id == store_id,
+                IntegrationLog.aggregator_id == agg.id,
+                IntegrationLog.log_type == "store_status",
+            )
+            .order_by(IntegrationLog.created_at.desc())
+            .limit(1)
+        )
+        latest_log = log_result.scalar_one_or_none()
+        is_online = link.is_enabled
+        if latest_log and latest_log.details:
+            is_online = latest_log.details.get("is_online", link.is_enabled)
+
+        statuses.append(AggregatorStoreStatus(
+            aggregator_id=agg.id,
+            aggregator_code=agg.code,
+            aggregator_name=agg.name,
+            store_id=store_id,
+            external_store_id=link.external_store_id,
+            is_online=is_online,
+            is_enabled=link.is_enabled,
+        ))
+
+    return statuses

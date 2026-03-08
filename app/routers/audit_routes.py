@@ -22,6 +22,7 @@ async def list_audit_logs(
     store_id: UUID = Query(...),
     entity_type: str | None = Query(None),
     action: str | None = Query(None),
+    user_id: UUID | None = Query(None, description="Filter by user ID"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -32,6 +33,8 @@ async def list_audit_logs(
         q = q.where(AuditLog.entity_type == entity_type)
     if action:
         q = q.where(AuditLog.action == action)
+    if user_id:
+        q = q.where(AuditLog.user_id == user_id)
     q = q.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
     result = await db.execute(q)
     return result.scalars().all()

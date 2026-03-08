@@ -5,6 +5,7 @@ Inventory routes – items, stock, adjustments, recipes, transfers.
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -244,3 +245,52 @@ async def api_update_transfer_status(
         transfer.approved_by = current_user.id
     await db.flush()
     return transfer
+
+
+# ── Out-of-Stock Toggle ───────────────────────────────────────────────────
+
+class ItemAvailabilityUpdate(BaseModel):
+    is_active: bool
+
+
+class OutOfStockItemResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    name: str
+    sku: str | None
+    category: str | None
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/out-of-stock", response_model=list[OutOfStockItemResponse])
+async def api_list_out_of_stock(
+    store_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """List inventory items currently marked as inactive (out of stock)."""
+    result = await db.execute(
+        select(InventoryItem)
+        .where(InventoryItem.store_id == store_id, InventoryItem.is_active.is_(False))
+        .order_by(InventoryItem.name)
+    )
+    return result.scalars().all()
+
+
+@router.put("/items/{item_id}/availability", response_model=OutOfStockItemResponse)
+async def api_toggle_availability(
+    item_id: UUID,
+    payload: ItemAvailabilityUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Quick toggle for marking an item in/out of stock."""
+    result = await db.execute(select(InventoryItem).where(InventoryItem.id == item_id))
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    item.is_active = payload.is_active
+    await db.flush()
+    return item
