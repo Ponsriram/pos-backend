@@ -1,11 +1,13 @@
 """
 Product & Category routes.
 
-POST /products/categories → create a category
-GET  /products/categories → list categories for a store
-POST /products            → create a product
-GET  /products            → list products for a store
-PUT  /products/{id}       → update a product
+POST   /products/categories              → create a category
+GET    /products/categories              → list categories for a store
+DELETE /products/categories/{category_id} → delete a category
+POST   /products                          → create a product
+GET    /products                          → list products for a store
+PUT    /products/{id}                     → update a product
+DELETE /products/{id}                     → soft-delete a product
 """
 
 from uuid import UUID
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.products import Category, Product
+from app.models.stores import Store
 from app.models.users import User
 from app.schemas.product_schema import (
     CategoryCreate,
@@ -64,6 +67,61 @@ async def list_categories(
         .order_by(Category.name)
     )
     return result.scalars().all()
+
+
+@router.delete(
+    "/categories/{category_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a product category",
+    responses={
+        404: {"description": "Category not found"},
+        403: {"description": "Not authorised to delete this category"},
+        409: {"description": "Cannot delete category with existing products"},
+    },
+)
+async def delete_category(
+    category_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete a product category.
+
+    - The category must belong to a store owned by the authenticated user.
+    - Deletion is blocked if any products are still linked to the category.
+    """
+    # Fetch category
+    result = await db.execute(select(Category).where(Category.id == category_id))
+    category = result.scalar_one_or_none()
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found",
+        )
+
+    # Verify store ownership
+    store_result = await db.execute(
+        select(Store).where(Store.id == category.store_id, Store.owner_id == current_user.id)
+    )
+    if not store_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorised to delete this category",
+        )
+
+    # Check for dependent products
+    product_result = await db.execute(
+        select(Product.id).where(Product.category_id == category_id).limit(1)
+    )
+    if product_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete category with existing products",
+        )
+
+    await db.delete(category)
+    await db.flush()
+    return None
 
 
 # ── Products ──────────────────────────────────────────────────────────────
@@ -138,3 +196,46 @@ async def update_product(
 
     await db.flush()
     return product
+
+
+@router.delete(
+    "/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a product",
+    responses={
+        404: {"description": "Product not found"},
+        403: {"description": "Not authorised to delete this product"},
+    },
+)
+async def delete_product(
+    product_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Soft-delete a product by setting `is_active = False`.
+
+    The product must belong to a store owned by the authenticated user.
+    The row is NOT permanently removed.
+    """
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    # Verify store ownership
+    store_result = await db.execute(
+        select(Store).where(Store.id == product.store_id, Store.owner_id == current_user.id)
+    )
+    if not store_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorised to delete this product",
+        )
+
+    product.is_active = False
+    await db.flush()
+    return None

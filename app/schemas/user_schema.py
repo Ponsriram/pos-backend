@@ -172,6 +172,20 @@ class EmployeeCreate(BaseModel):
     permissions: list[str] | None = None
 
 
+class EmployeePinLoginRequest(BaseModel):
+    employee_code: str = Field(..., examples=["EMP001"])
+    pin: str = Field(..., examples=["1234"])
+    store_id: UUID
+
+
+class EmployeePinLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    employee_id: UUID
+    employee_name: str
+    store_id: UUID
+
+
 class EmployeeUpdate(BaseModel):
     name: str | None = None
     pin: str | None = None
