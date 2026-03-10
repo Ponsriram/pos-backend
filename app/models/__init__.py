@@ -6,7 +6,7 @@ Import all models here so Alembic auto-generates migrations correctly.
 
 from app.models.users import User, UserPermission  # noqa: F401
 from app.models.stores import (  # noqa: F401
-    Chain, Store, POSTerminal, Employee, DineInTable, OrderTableLink, Expense,
+    Chain, Store, POSTerminal, Employee, Expense,
 )
 from app.models.products import Category, Product  # noqa: F401
 from app.models.orders import Order, OrderItem, Payment  # noqa: F401

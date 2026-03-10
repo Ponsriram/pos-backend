@@ -67,7 +67,7 @@ app = FastAPI(
         "- Menu & pricing management with schedules\n"
         "- Product/category catalogue\n"
         "- Order lifecycle, status transitions & payments\n"
-        "- Table management, merges, transfers\n"
+        "- Simple table count per store with dynamic labels\n"
         "- Delivery management & aggregator integrations\n"
         "- Kitchen order tickets (KOT) & invoicing\n"
         "- Shift management & day-close reports\n"

@@ -73,7 +73,7 @@ async def sync_orders(db: AsyncSession, orders: list[SyncOrder]) -> SyncResponse
                 store_id=payload.store_id,
                 employee_id=payload.employee_id,
                 terminal_id=payload.terminal_id,
-                table_id=payload.table_id,
+                table_number=payload.table_number,
                 order_type=payload.order_type,
                 gross_amount=float(gross),
                 tax_amount=float(tax),

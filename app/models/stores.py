@@ -5,8 +5,6 @@ Store-related models.
 - Chain: restaurant chain / brand grouping.
 - POSTerminal: a device registered at a store (tablet / kiosk).
 - Employee: staff member assigned to a store.
-- DineInTable: physical tables inside a store.
-- OrderTableLink: many-to-many for table merges.
 - Expense: operational expense ledger per store.
 """
 
@@ -83,9 +81,9 @@ class Store(Base):
     chain = relationship("Chain", back_populates="stores")
     terminals = relationship("POSTerminal", back_populates="store", cascade="all, delete-orphan")
     employees = relationship("Employee", back_populates="store", cascade="all, delete-orphan")
+    table_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     categories = relationship("Category", back_populates="store", cascade="all, delete-orphan")
     products = relationship("Product", back_populates="store", cascade="all, delete-orphan")
-    tables = relationship("DineInTable", back_populates="store", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="store", cascade="all, delete-orphan")
     expenses = relationship("Expense", back_populates="store", cascade="all, delete-orphan")
 
@@ -157,59 +155,6 @@ class Employee(Base):
     __table_args__ = (
         Index("ix_employees_store_id", "store_id"),
         Index("ix_employees_user_id", "user_id"),
-    )
-
-
-# ── Dine-In Table ────────────────────────────────────────────────────────
-
-class DineInTable(Base):
-    __tablename__ = "dine_in_tables"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False
-    )
-    table_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    label: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="available")
-    section: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    zone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    position_x: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    position_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    current_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-
-    store = relationship("Store", back_populates="tables")
-    orders = relationship("Order", back_populates="table")
-
-    __table_args__ = (
-        Index("ix_dine_in_tables_store_id", "store_id"),
-        Index("ix_dine_in_tables_status", "status"),
-    )
-
-
-# ── Table Merge (many-to-many: order ↔ tables) ──────────────────────────
-
-class OrderTableLink(Base):
-    """Links multiple tables to a single order (table merge)."""
-    __tablename__ = "order_table_links"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    order_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
-    )
-    table_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("dine_in_tables.id", ondelete="CASCADE"), nullable=False
-    )
-
-    __table_args__ = (
-        Index("ix_order_table_links_order_id", "order_id"),
-        Index("ix_order_table_links_table_id", "table_id"),
     )
 
 

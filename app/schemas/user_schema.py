@@ -1,5 +1,4 @@
-"""
-Pydantic schemas for User / Auth / Store / Employee / Table / Expense endpoints.
+"""Pydantic schemas for User / Auth / Store / Employee / Expense endpoints.
 
 Separates request bodies (Create) from response bodies (Response)
 to avoid leaking sensitive fields like password_hash.
@@ -100,6 +99,7 @@ class StoreCreate(BaseModel):
     state: str | None = Field(None, max_length=100, examples=["Karnataka"])
     city: str | None = Field(None, max_length=100, examples=["Bangalore"])
     outlet_type: str | None = Field(None, max_length=20, examples=["COFO", "FOFO", "COCO", "FOCO"])
+    table_count: int = Field(0, ge=0, examples=[10])
 
 
 class StoreUpdate(BaseModel):
@@ -115,6 +115,7 @@ class StoreUpdate(BaseModel):
     state: str | None = None
     city: str | None = None
     outlet_type: str | None = None
+    table_count: int | None = Field(None, ge=0)
 
 
 class StoreResponse(BaseModel):
@@ -131,6 +132,7 @@ class StoreResponse(BaseModel):
     state: str | None
     city: str | None
     outlet_type: str | None
+    table_count: int
     is_active: bool
     created_at: datetime
 
@@ -196,63 +198,17 @@ class EmployeeResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ── Dine-In Table ────────────────────────────────────────────────────────
+# ── Dynamic Table Labels (generated from table_count) ─────────────────
 
-class DineInTableCreate(BaseModel):
-    store_id: UUID
-    table_number: int = Field(..., ge=1, examples=[1])
-    label: str | None = Field(None, max_length=50)
-    capacity: int = Field(4, ge=1, examples=[4])
-    status: str = Field("available", examples=["available"])
-    section: str | None = Field(None, max_length=50, examples=["Main Hall"])
-    zone: str | None = Field(None, max_length=50)
-    position_x: int | None = None
-    position_y: int | None = None
-
-
-class DineInTableUpdate(BaseModel):
-    table_number: int | None = None
-    label: str | None = None
-    capacity: int | None = None
-    status: str | None = None
-    section: str | None = None
-    zone: str | None = None
-    position_x: int | None = None
-    position_y: int | None = None
-    is_active: bool | None = None
-
-
-class DineInTableResponse(BaseModel):
-    id: UUID
-    store_id: UUID
+class TableLabel(BaseModel):
     table_number: int
-    label: str | None
-    capacity: int
-    status: str
-    section: str | None
-    zone: str | None
-    position_x: int | None
-    position_y: int | None
-    is_active: bool
-    current_order_id: UUID | None
-
-    model_config = {"from_attributes": True}
+    table_label: str
 
 
-class TableMergeRequest(BaseModel):
-    """Merge multiple tables into one order."""
-    table_ids: list[UUID] = Field(..., min_length=2)
-    order_id: UUID
-
-
-class OrderSplitRequest(BaseModel):
-    """Split an order's items into multiple new orders on different tables."""
-    splits: list["SplitGroup"] = Field(..., min_length=2)
-
-
-class SplitGroup(BaseModel):
-    table_id: UUID
-    item_ids: list[UUID] = Field(..., min_length=1)
+class StoreTablesResponse(BaseModel):
+    store_id: UUID
+    table_count: int
+    tables: list[TableLabel]
 
 
 # ── Expense ───────────────────────────────────────────────────────────────

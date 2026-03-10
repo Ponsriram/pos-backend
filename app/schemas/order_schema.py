@@ -47,7 +47,7 @@ class OrderCreate(BaseModel):
     store_id: UUID
     employee_id: UUID | None = None
     terminal_id: UUID | None = None
-    table_id: UUID | None = None
+    table_number: int | None = None
     guest_id: UUID | None = None
     shift_id: UUID | None = None
     order_type: str = Field("dine_in", examples=["dine_in", "takeaway", "delivery"])
@@ -61,7 +61,7 @@ class OrderCreate(BaseModel):
 class OrderUpdate(BaseModel):
     """Update an open order: items, discounts, notes."""
     employee_id: UUID | None = None
-    table_id: UUID | None = None
+    table_number: int | None = None
     guest_id: UUID | None = None
     discount_amount: float | None = Field(None, ge=0)
     service_charge: float | None = Field(None, ge=0)
@@ -86,7 +86,7 @@ class OrderResponse(BaseModel):
     store_id: UUID
     employee_id: UUID | None
     terminal_id: UUID | None
-    table_id: UUID | None
+    table_number: int | None
     guest_id: UUID | None
     shift_id: UUID | None
     order_number: str | None
@@ -127,7 +127,7 @@ class OrderCancelRequest(BaseModel):
 
 class OrderTransferRequest(BaseModel):
     """Transfer an order to a different table or waiter."""
-    table_id: UUID | None = None
+    table_number: int | None = None
     employee_id: UUID | None = None
 
 
@@ -176,7 +176,7 @@ class SyncOrder(BaseModel):
     store_id: UUID
     employee_id: UUID | None = None
     terminal_id: UUID | None = None
-    table_id: UUID | None = None
+    table_number: int | None = None
     order_type: str = "dine_in"
     discount_amount: float = 0.0
     items: list[SyncOrderItem] = Field(..., min_length=1)

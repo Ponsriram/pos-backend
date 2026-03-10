@@ -71,7 +71,7 @@ async def create_order(db: AsyncSession, payload: OrderCreate) -> Order:
         store_id=payload.store_id,
         employee_id=payload.employee_id,
         terminal_id=payload.terminal_id,
-        table_id=payload.table_id,
+        table_number=payload.table_number,
         guest_id=payload.guest_id,
         shift_id=payload.shift_id,
         order_number=order_number,
@@ -136,8 +136,8 @@ async def cancel_order(
 async def transfer_order(
     db: AsyncSession, order: Order, payload: OrderTransferRequest
 ) -> Order:
-    if payload.table_id is not None:
-        order.table_id = payload.table_id
+    if payload.table_number is not None:
+        order.table_number = payload.table_number
     if payload.employee_id is not None:
         order.employee_id = payload.employee_id
     order.updated_at = datetime.now(timezone.utc)

@@ -34,9 +34,7 @@ class Order(Base):
     terminal_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("pos_terminals.id", ondelete="SET NULL"), nullable=True
     )
-    table_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("dine_in_tables.id", ondelete="SET NULL"), nullable=True
-    )
+    table_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Link to guest profile
     guest_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("guests.id", ondelete="SET NULL"), nullable=True
@@ -94,7 +92,6 @@ class Order(Base):
     store = relationship("Store", back_populates="orders")
     employee = relationship("Employee", back_populates="orders")
     terminal = relationship("POSTerminal", back_populates="orders")
-    table = relationship("DineInTable", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
 
