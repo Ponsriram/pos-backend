@@ -7,7 +7,7 @@ DELETE /products/categories/{category_id} → delete a category
 POST   /products                          → create a product
 GET    /products                          → list products for a store
 PUT    /products/{id}                     → update a product
-DELETE /products/{id}                     → soft-delete a product
+DELETE /products/{id}                     → delete a product
 """
 
 from uuid import UUID
@@ -109,14 +109,17 @@ async def delete_category(
             detail="Not authorised to delete this category",
         )
 
-    # Check for dependent products
+    # Check for active dependent products
     product_result = await db.execute(
-        select(Product.id).where(Product.category_id == category_id).limit(1)
+        select(Product.id).where(
+            Product.category_id == category_id,
+            Product.is_active.is_(True),
+        ).limit(1)
     )
     if product_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot delete category with existing products",
+            detail="Products are still assigned to this category.",
         )
 
     await db.delete(category)
@@ -201,7 +204,7 @@ async def update_product(
 @router.delete(
     "/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Soft-delete a product",
+    summary="Delete a product",
     responses={
         404: {"description": "Product not found"},
         403: {"description": "Not authorised to delete this product"},
@@ -213,10 +216,9 @@ async def delete_product(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Soft-delete a product by setting `is_active = False`.
+    Permanently delete a product from the database.
 
     The product must belong to a store owned by the authenticated user.
-    The row is NOT permanently removed.
     """
     result = await db.execute(select(Product).where(Product.id == product_id))
     product = result.scalar_one_or_none()
@@ -236,6 +238,6 @@ async def delete_product(
             detail="Not authorised to delete this product",
         )
 
-    product.is_active = False
+    await db.delete(product)
     await db.flush()
     return None

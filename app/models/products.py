@@ -34,7 +34,7 @@ class Category(Base):
     )
 
     store = relationship("Store", back_populates="categories")
-    products = relationship("Product", back_populates="category", cascade="all, delete-orphan")
+    products = relationship("Product", back_populates="category", passive_deletes=True)
 
     __table_args__ = (
         Index("ix_categories_store_id", "store_id"),
