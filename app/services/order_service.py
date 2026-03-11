@@ -173,6 +173,11 @@ async def create_payment(db: AsyncSession, payload: PaymentCreate) -> Payment:
         total_paid = float(pay_result.scalar()) + payload.amount
         if total_paid >= order.net_amount:
             order.payment_status = "completed"
+            if order.status not in ("paid", "cancelled"):
+                order.status = "paid"
+                order.updated_at = datetime.now(timezone.utc)
+        elif total_paid > 0:
+            order.payment_status = "partial"
 
     await db.flush()
     return payment
