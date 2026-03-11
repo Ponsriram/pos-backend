@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.billing import KOT, KOTItem, Invoice
 from app.models.orders import Order, OrderItem
+from app.models.products import Product
 
 
 async def _next_kot_number_for_order(db: AsyncSession, order_id: uuid.UUID) -> int:
@@ -61,14 +62,28 @@ async def create_kot(
     if not order_items:
         raise ValueError("No unsent items available for KOT")
 
+    # Resolve product names in one query
+    product_ids = [oi.product_id for oi in order_items if oi.product_id]
+    product_name_map: dict = {}
+    if product_ids:
+        prod_result = await db.execute(
+            select(Product.id, Product.name).where(Product.id.in_(product_ids))
+        )
+        product_name_map = {row.id: row.name for row in prod_result}
+
     kot_items = []
     for oi in order_items:
+        # Prefer stored product_name, then product lookup, then fallback
+        name = (
+            oi.product_name
+            or product_name_map.get(oi.product_id, "Unknown Product")
+        )
         kot_items.append(
             KOTItem(
                 id=uuid.uuid4(),
                 kot_id=kot_id,
                 order_item_id=oi.id,
-                product_name=str(oi.product_id),  # enriched by caller / product lookup
+                product_name=name,
                 quantity=oi.quantity,
                 notes=oi.notes,
             )

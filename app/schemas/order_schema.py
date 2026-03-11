@@ -28,6 +28,7 @@ class OrderItemResponse(BaseModel):
     id: UUID
     order_id: UUID
     product_id: UUID | None
+    product_name: str = ""
     quantity: int
     price: float
     tax_amount: float
