@@ -54,6 +54,7 @@ async def create_order(db: AsyncSession, payload: OrderCreate) -> Order:
                 id=uuid.uuid4(),
                 order_id=order_id,
                 product_id=item.product_id,
+                product_name=product.name if product else "",
                 quantity=item.quantity,
                 price=float(item.price),
                 tax_amount=float(item_tax),

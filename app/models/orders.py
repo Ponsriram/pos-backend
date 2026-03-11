@@ -126,6 +126,9 @@ class OrderItem(Base):
     discount_amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)
     total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
 
+    # Snapshot of product name at the time of ordering
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
     # Item-level status: active | cancelled | voided
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
