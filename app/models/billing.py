@@ -35,7 +35,7 @@ class KOT(Base):
     kot_number: Mapped[int] = mapped_column(Integer, nullable=False)
     # Target kitchen section
     kitchen_section: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    # pending | preparing | ready
+    # pending | preparing | ready | served
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     reprint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(

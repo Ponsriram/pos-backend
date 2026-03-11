@@ -43,8 +43,8 @@ async def list_kitchen_orders(
     if kot_status:
         query = query.where(KOT.status == kot_status)
     else:
-        # By default show non-ready tickets (active kitchen work)
-        query = query.where(KOT.status.in_(["pending", "preparing"]))
+        # By default show all active kitchen tickets
+        query = query.where(KOT.status.in_(["pending", "preparing", "ready", "served"]))
 
     query = query.order_by(KOT.created_at.asc())
 
@@ -57,7 +57,7 @@ async def list_kitchen_orders(
 @router.put(
     "/kitchen/kot/{kot_id}/status",
     response_model=KOTResponse,
-    summary="Advance a KOT through its lifecycle (pending → preparing → ready)",
+    summary="Advance a KOT through its lifecycle (pending → preparing → ready → served)",
 )
 async def api_update_kot_status(
     kot_id: UUID,
