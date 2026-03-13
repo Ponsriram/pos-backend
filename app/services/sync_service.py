@@ -13,7 +13,7 @@ import uuid
 from datetime import timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.orders import Order, OrderItem, Payment
@@ -127,7 +127,21 @@ async def sync_payments(db: AsyncSession, payments: list[SyncPayment]) -> SyncRe
             )
             order = result.scalar_one_or_none()
             if order:
-                order.payment_status = "completed"
+                total_paid_result = await db.execute(
+                    select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                        Payment.order_id == order.id,
+                        Payment.is_refund.is_(False),
+                    )
+                )
+                total_paid = float(total_paid_result.scalar())
+                if total_paid >= float(order.net_amount):
+                    order.payment_status = "completed"
+                    if order.status == "completed":
+                        order.status = "paid"
+                elif total_paid > 0:
+                    order.payment_status = "partial"
+                else:
+                    order.payment_status = "pending"
 
             synced += 1
 

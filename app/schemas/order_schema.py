@@ -119,7 +119,20 @@ class OrderComplete(BaseModel):
 
 class OrderStatusUpdate(BaseModel):
     """Move an order through its lifecycle."""
-    status: str = Field(..., examples=["sent_to_kitchen", "preparing", "ready", "completed", "paid"])
+    status: str = Field(
+        ...,
+        examples=[
+            "sent_to_kitchen",
+            "preparing",
+            "ready",
+            "served",
+            "handed_over",
+            "out_for_delivery",
+            "delivered",
+            "completed",
+            "paid",
+        ],
+    )
 
 
 class OrderAddItemRequest(BaseModel):
@@ -153,6 +166,16 @@ class PaymentCreate(BaseModel):
     payment_method: str = Field(..., examples=["cash", "card", "upi", "wallet", "gift_card"])
     amount: float = Field(..., gt=0, examples=[500.00])
     tip_amount: float = Field(0.0, ge=0)
+    reference: str | None = Field(None, max_length=255)
+
+
+class PaymentUpdate(BaseModel):
+    payment_method: str | None = Field(
+        None,
+        examples=["cash", "card", "upi", "wallet", "gift_card"],
+    )
+    amount: float | None = Field(None, gt=0, examples=[500.00])
+    tip_amount: float | None = Field(None, ge=0)
     reference: str | None = Field(None, max_length=255)
 
 

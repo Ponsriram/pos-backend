@@ -20,6 +20,7 @@ from app.schemas.order_schema import (
     OrderAddItemRequest,
     OrderUpdateItemRequest,
     PaymentCreate,
+    PaymentUpdate,
     RefundRequest,
 )
 
@@ -99,12 +100,23 @@ async def create_order(db: AsyncSession, payload: OrderCreate) -> Order:
 async def update_order_status(
     db: AsyncSession, order: Order, new_status: str
 ) -> Order:
-    """Advance order through its KOT-aware lifecycle."""
+    """Advance order through a strict lifecycle with order-type-specific fulfillment."""
     allowed_transitions = {
         "open": {"sent_to_kitchen", "cancelled"},
         "sent_to_kitchen": {"preparing", "cancelled"},
         "preparing": {"ready", "cancelled"},
-        "ready": {"completed", "cancelled"},
+        # Split fulfillment path by order type once food is ready.
+        "ready": {
+            "served" if order.order_type == "dine_in" else None,
+            "handed_over" if order.order_type in ("takeaway", "take_away") else None,
+            "out_for_delivery" if order.order_type in ("delivery", "aggregator") else None,
+            "cancelled",
+        }
+        - {None},
+        "served": {"completed", "cancelled"},
+        "handed_over": {"completed", "cancelled"},
+        "out_for_delivery": {"delivered", "cancelled"},
+        "delivered": {"completed", "cancelled"},
         "completed": {"paid"},
         "paid": set(),
         "cancelled": set(),
@@ -149,7 +161,82 @@ async def transfer_order(
     return order
 
 
+def _is_payment_unlock_status(order: Order) -> bool:
+    """Return True when an order has reached a pay-eligible stage."""
+    status = (order.status or "").lower()
+    order_type = (order.order_type or "").lower()
+
+    if status in {"paid", "completed"}:
+        return True
+
+    # Dine-in can be settled once it is served.
+    if order_type == "dine_in":
+        return status in {"served", "ready"}
+
+    # Takeaway can be settled once food is ready/handed over.
+    if order_type in {"takeaway", "take_away"}:
+        return status in {"ready", "handed_over"}
+
+    # Delivery/aggregator may be settled once dispatched or delivered.
+    if order_type in {"delivery", "aggregator"}:
+        return status in {"ready", "out_for_delivery", "delivered"}
+
+    return False
+
+
+def _is_fulfillment_completed(order: Order) -> bool:
+    """Operational fulfillment finished, regardless of payment."""
+    return (order.status or "").lower() in {
+        "completed",
+        "served",
+        "handed_over",
+        "delivered",
+    }
+
+
+async def _recalculate_payment_state(db: AsyncSession, order: Order) -> None:
+    """Recompute order payment status from all non-refund payments."""
+    pay_result = await db.execute(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.order_id == order.id,
+            Payment.is_refund.is_(False),
+        )
+    )
+    total_paid = float(pay_result.scalar())
+
+    if total_paid >= float(order.net_amount):
+        order.payment_status = "completed"
+        # Mark fully settled only when fulfillment is actually finished.
+        if order.status == "completed" or (
+            order.status == "paid" and _is_fulfillment_completed(order)
+        ):
+            order.status = "paid"
+            order.updated_at = datetime.now(timezone.utc)
+    elif total_paid > 0:
+        order.payment_status = "partial"
+        # If a paid order gets edited below full amount, roll back paid state.
+        if order.status == "paid":
+            order.status = "completed"
+            order.updated_at = datetime.now(timezone.utc)
+    else:
+        order.payment_status = "pending"
+        if order.status == "paid":
+            order.status = "completed"
+            order.updated_at = datetime.now(timezone.utc)
+
+
 async def create_payment(db: AsyncSession, payload: PaymentCreate) -> Payment:
+    result = await db.execute(select(Order).where(Order.id == payload.order_id))
+    order = result.scalar_one_or_none()
+    if not order:
+        raise ValueError("Order not found")
+
+    if order.status == "cancelled":
+        raise ValueError("Cannot take payment for a cancelled order")
+
+    # Allow prepayment at any active stage; keep paid/finalization coupled to fulfillment.
+    # _is_payment_unlock_status is still useful for UI guidance, but not hard-gated here.
+
     payment = Payment(
         id=uuid.uuid4(),
         order_id=payload.order_id,
@@ -160,24 +247,40 @@ async def create_payment(db: AsyncSession, payload: PaymentCreate) -> Payment:
     )
     db.add(payment)
 
-    # Check if order is fully paid
-    result = await db.execute(select(Order).where(Order.id == payload.order_id))
-    order = result.scalar_one_or_none()
+    await db.flush()
+    await _recalculate_payment_state(db, order)
+
+    await db.flush()
+    return payment
+
+
+async def update_payment(
+    db: AsyncSession,
+    payment_id: uuid.UUID,
+    payload: PaymentUpdate,
+) -> Payment:
+    """Edit a recorded payment (for billing mistakes/corrections)."""
+    result = await db.execute(select(Payment).where(Payment.id == payment_id))
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise ValueError("Payment not found")
+    if payment.is_refund:
+        raise ValueError("Refund entries cannot be edited")
+
+    if payload.payment_method is not None:
+        payment.payment_method = payload.payment_method
+    if payload.amount is not None:
+        payment.amount = float(payload.amount)
+    if payload.tip_amount is not None:
+        payment.tip_amount = float(payload.tip_amount)
+    if payload.reference is not None:
+        payment.reference = payload.reference
+
+    order_result = await db.execute(select(Order).where(Order.id == payment.order_id))
+    order = order_result.scalar_one_or_none()
     if order:
-        pay_result = await db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.order_id == order.id,
-                Payment.is_refund.is_(False),
-            )
-        )
-        total_paid = float(pay_result.scalar()) + payload.amount
-        if total_paid >= order.net_amount:
-            order.payment_status = "completed"
-            if order.status not in ("paid", "cancelled"):
-                order.status = "paid"
-                order.updated_at = datetime.now(timezone.utc)
-        elif total_paid > 0:
-            order.payment_status = "partial"
+        await db.flush()
+        await _recalculate_payment_state(db, order)
 
     await db.flush()
     return payment

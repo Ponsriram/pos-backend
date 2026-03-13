@@ -49,7 +49,12 @@ class Order(Base):
 
     # dine_in | takeaway | delivery | aggregator
     order_type: Mapped[str] = mapped_column(String(20), nullable=False, default="dine_in")
-    # Order status lifecycle: open | sent_to_kitchen | preparing | ready | completed | paid | cancelled
+    # Order status lifecycle:
+    # open -> sent_to_kitchen -> preparing -> ready ->
+    #   dine_in: served -> completed
+    #   takeaway: handed_over -> completed
+    #   delivery/aggregator: out_for_delivery -> delivered -> completed
+    # and then payment can move completed -> paid
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
 
     # Channel: pos | online | aggregator

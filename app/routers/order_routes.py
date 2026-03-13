@@ -9,6 +9,7 @@ PUT    /orders/{id}/status        → advance order status
 PUT    /orders/{id}/cancel        → cancel order
 PUT    /orders/{id}/transfer      → transfer table/waiter
 POST   /orders/payments           → record a payment
+PUT    /orders/payments/{id}      → edit a payment
 POST   /orders/payments/refund    → issue refund
 POST   /sync/orders               → bulk-sync offline orders
 POST   /sync/payments             → bulk-sync offline payments
@@ -35,6 +36,7 @@ from app.schemas.order_schema import (
     OrderAddItemRequest,
     OrderUpdateItemRequest,
     PaymentCreate,
+    PaymentUpdate,
     PaymentResponse,
     RefundRequest,
     SyncOrdersRequest,
@@ -51,6 +53,7 @@ from app.services.order_service import (
     update_order_item,
     delete_order_item,
     create_payment,
+    update_payment,
     create_refund,
 )
 from app.services.billing_service import create_kot, get_kot
@@ -99,6 +102,28 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return order
+
+
+@router.get(
+    "/orders/{order_id}/payments",
+    response_model=list[PaymentResponse],
+    summary="List payments recorded for an order",
+)
+async def get_order_payments(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    order_result = await db.execute(select(Order.id).where(Order.id == order_id))
+    if not order_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    result = await db.execute(
+        select(Payment)
+        .where(Payment.order_id == order_id)
+        .order_by(Payment.paid_at.desc())
+    )
+    return result.scalars().all()
 
 
 # ── List orders ───────────────────────────────────────────────────────────
@@ -334,7 +359,30 @@ async def api_create_payment(
     order_result = await db.execute(select(Order).where(Order.id == payload.order_id))
     if not order_result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    return await create_payment(db, payload)
+    try:
+        return await create_payment(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.put(
+    "/orders/payments/{payment_id}",
+    response_model=PaymentResponse,
+    summary="Edit a payment for correction",
+)
+async def api_update_payment(
+    payment_id: UUID,
+    payload: PaymentUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    try:
+        return await update_payment(db, payment_id, payload)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
 
 # ── Refund ────────────────────────────────────────────────────────────────
