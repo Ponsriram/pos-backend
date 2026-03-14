@@ -1,7 +1,6 @@
 """Billing service – KOT generation, invoice creation."""
 
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select, func
@@ -116,15 +115,13 @@ async def update_kot_status(
     db: AsyncSession, kot_id: uuid.UUID, new_status: str
 ) -> KOT:
     """
-    Advance a KOT through its lifecycle: pending → preparing → ready → served.
+    Advance a KOT through its lifecycle: pending → preparing → ready.
     Also updates the linked order items' kitchen_status.
-    When all KOTs for an order reach 'served', the order auto-advances to 'ready'.
     """
     allowed_transitions = {
         "pending": {"preparing"},
         "preparing": {"ready"},
-        "ready": {"served"},
-        "served": set(),
+        "ready": set(),
     }
     result = await db.execute(
         select(KOT).options(selectinload(KOT.items)).where(KOT.id == kot_id)
@@ -146,31 +143,6 @@ async def update_kot_status(
         )
         for oi in items_result.scalars().all():
             oi.kitchen_status = new_status
-
-    # Auto-advance order status based on KOT progress
-    if new_status == "preparing":
-        order_res = await db.execute(
-            select(Order).where(Order.id == kot.order_id)
-        )
-        order = order_res.scalar_one_or_none()
-        if order and order.status == "sent_to_kitchen":
-            order.status = "preparing"
-            order.updated_at = datetime.now(timezone.utc)
-
-    # When all KOTs for this order are "served", advance order to "ready"
-    if new_status == "served":
-        order_result = await db.execute(
-            select(KOT.status).where(KOT.order_id == kot.order_id)
-        )
-        all_statuses = [row for row in order_result.scalars().all()]
-        if all(s == "served" for s in all_statuses):
-            order_res = await db.execute(
-                select(Order).where(Order.id == kot.order_id)
-            )
-            order = order_res.scalar_one_or_none()
-            if order and order.status in ("sent_to_kitchen", "preparing"):
-                order.status = "ready"
-                order.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     return kot
