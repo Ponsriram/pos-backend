@@ -6,7 +6,7 @@ All amounts are scoped to a single store and an optional date range.
 GET /analytics/summary → full dashboard summary
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -58,9 +58,10 @@ async def get_summary(
             Order.created_at >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
         )
     if end_date:
-        # end of the day
+        # Use next day midnight for inclusive end-of-day
+        next_day = end_date + timedelta(days=1)
         filters.append(
-            Order.created_at < datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+            Order.created_at < datetime(next_day.year, next_day.month, next_day.day, tzinfo=timezone.utc)
         )
 
     # ── Order aggregates ──────────────────────────────────────────────────
@@ -79,22 +80,16 @@ async def get_summary(
     # ── Payment breakdown ─────────────────────────────────────────────────
     pay_q = (
         select(
-            func.coalesce(
-                func.sum(case((Payment.payment_method == "cash", Payment.amount), else_=0)), 0
-            ).label("cash"),
-            func.coalesce(
-                func.sum(case((Payment.payment_method == "card", Payment.amount), else_=0)), 0
-            ).label("card"),
-            func.coalesce(
-                func.sum(case((Payment.payment_method == "upi", Payment.amount), else_=0)), 0
-            ).label("upi"),
+            Payment.payment_method,
+            func.coalesce(func.sum(Payment.amount), 0),
         )
         .join(Order, Payment.order_id == Order.id)
-        .where(*filters)
+        .where(*filters, Payment.is_refund.is_(False))
+        .group_by(Payment.payment_method)
     )
 
     pay_result = await db.execute(pay_q)
-    pay_row = pay_result.one()
+    payment_breakdown = {method: float(amount) for method, amount in pay_result.all()}
 
     return AnalyticsSummary(
         total_revenue=float(row.total_revenue),
@@ -103,11 +98,7 @@ async def get_summary(
         gross_sales=float(row.gross_sales),
         net_sales=float(row.net_sales),
         total_discounts=float(row.total_discounts),
-        payment_breakdown={
-            "cash": float(pay_row.cash),
-            "card": float(pay_row.card),
-            "upi": float(pay_row.upi),
-        },
+        payment_breakdown=payment_breakdown,
     )
 
 
@@ -153,7 +144,7 @@ async def get_summary_by_store(
 
     outlets: list[OutletStat] = []
     agg_revenue = agg_orders = agg_tax = agg_gross = agg_net = agg_disc = 0.0
-    agg_cash = agg_card = agg_upi = 0.0
+    agg_pay: dict[str, float] = {}
 
     for store in stores:
         filters = [
@@ -165,8 +156,9 @@ async def get_summary_by_store(
                 Order.created_at >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
             )
         if end_date:
+            next_day = end_date + timedelta(days=1)
             filters.append(
-                Order.created_at < datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+                Order.created_at < datetime(next_day.year, next_day.month, next_day.day, tzinfo=timezone.utc)
             )
 
         order_q = select(
@@ -183,15 +175,15 @@ async def get_summary_by_store(
 
         pay_q = (
             select(
-                func.coalesce(func.sum(case((Payment.payment_method == "cash", Payment.amount), else_=0)), 0).label("cash"),
-                func.coalesce(func.sum(case((Payment.payment_method == "card", Payment.amount), else_=0)), 0).label("card"),
-                func.coalesce(func.sum(case((Payment.payment_method == "upi", Payment.amount), else_=0)), 0).label("upi"),
+                Payment.payment_method,
+                func.coalesce(func.sum(Payment.amount), 0),
             )
             .join(Order, Payment.order_id == Order.id)
-            .where(*filters)
+            .where(*filters, Payment.is_refund.is_(False))
+            .group_by(Payment.payment_method)
         )
         pay_result = await db.execute(pay_q)
-        pay_row = pay_result.one()
+        store_payment_breakdown = {method: float(amount) for method, amount in pay_result.all()}
 
         stat = OutletStat(
             store_id=store.id,
@@ -202,11 +194,7 @@ async def get_summary_by_store(
             gross_sales=float(row.gross_sales),
             net_sales=float(row.net_sales),
             total_discounts=float(row.total_discounts),
-            payment_breakdown={
-                "cash": float(pay_row.cash),
-                "card": float(pay_row.card),
-                "upi": float(pay_row.upi),
-            },
+            payment_breakdown=store_payment_breakdown,
         )
         outlets.append(stat)
 
@@ -216,9 +204,8 @@ async def get_summary_by_store(
         agg_gross += stat.gross_sales
         agg_net += stat.net_sales
         agg_disc += stat.total_discounts
-        agg_cash += float(pay_row.cash)
-        agg_card += float(pay_row.card)
-        agg_upi += float(pay_row.upi)
+        for method, amount in store_payment_breakdown.items():
+            agg_pay[method] = agg_pay.get(method, 0.0) + amount
 
     return OutletAnalyticsResponse(
         outlets=outlets,
@@ -229,6 +216,6 @@ async def get_summary_by_store(
             gross_sales=agg_gross,
             net_sales=agg_net,
             total_discounts=agg_disc,
-            payment_breakdown={"cash": agg_cash, "card": agg_card, "upi": agg_upi},
+            payment_breakdown=agg_pay,
         ),
     )

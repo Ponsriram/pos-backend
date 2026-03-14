@@ -138,7 +138,7 @@ async def cancel_order(
     reason: str,
     cancelled_by: uuid.UUID | None = None,
 ) -> Order:
-    if order.status in ("completed", "cancelled"):
+    if order.status in ("completed", "paid", "cancelled"):
         raise ValueError(f"Cannot cancel order in '{order.status}' status")
 
     # If any amount was collected already, create an automatic refund so
@@ -405,6 +405,7 @@ async def add_order_item(
         id=uuid.uuid4(),
         order_id=order.id,
         product_id=payload.product_id,
+        product_name=product.name if product else "",
         quantity=payload.quantity,
         price=float(payload.price),
         tax_amount=float(item_tax),

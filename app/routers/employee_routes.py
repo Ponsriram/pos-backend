@@ -24,6 +24,7 @@ from app.schemas.user_schema import (
 )
 from app.services.auth_service import authenticate_employee_pin
 from app.utils.auth import get_current_user
+from app.utils.security import hash_password
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
@@ -70,7 +71,7 @@ async def add_employee(
         store_id=payload.store_id,
         name=payload.name,
         employee_code=payload.employee_code,
-        pin=payload.pin,
+        pin=hash_password(payload.pin),
         phone=payload.phone,
         email=payload.email,
         role=payload.role,
