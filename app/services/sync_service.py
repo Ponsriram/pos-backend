@@ -59,8 +59,10 @@ async def sync_orders(db: AsyncSession, orders: list[SyncOrder]) -> SyncResponse
                         id=uuid.uuid4(),
                         order_id=order_id,
                         product_id=item.product_id,
+                        product_name=product.name if product else "",
                         quantity=item.quantity,
                         price=float(item.price),
+                        tax_amount=float(item_tax),
                         total=float(item_total),
                     )
                 )

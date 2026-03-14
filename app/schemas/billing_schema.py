@@ -61,7 +61,7 @@ class InvoiceResponse(BaseModel):
     service_charge: float
     net_amount: float
     tax_breakdown: dict | None
-    created_at: datetime
+    issued_at: datetime
 
     model_config = {"from_attributes": True}
 

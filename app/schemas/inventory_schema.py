@@ -33,6 +33,7 @@ class InventoryLocationCreate(BaseModel):
     store_id: UUID
     name: str = Field(..., max_length=100, examples=["Main Kitchen", "Bar", "Walk-in Fridge"])
     description: str | None = None
+    is_active: bool = True
 
 
 class InventoryLocationResponse(BaseModel):
@@ -41,7 +42,7 @@ class InventoryLocationResponse(BaseModel):
     name: str
     description: str | None
     is_active: bool
-    created_at: datetime
+    created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

@@ -83,6 +83,6 @@ class DayCloseResponse(BaseModel):
     order_type_breakdown: dict | None
     cancelled_orders: int
     closed_by: UUID | None
-    created_at: datetime
+    closed_at: datetime
 
     model_config = {"from_attributes": True}

@@ -138,13 +138,43 @@ async def cancel_order(
     reason: str,
     cancelled_by: uuid.UUID | None = None,
 ) -> Order:
-    if order.status in ("completed", "cancelled"):
+    if order.status in ("completed", "paid", "cancelled"):
         raise ValueError(f"Cannot cancel order in '{order.status}' status")
+
+    # If any amount was collected already, create an automatic refund so
+    # cancelled+paid orders are financially settled.
+    charge_result = await db.execute(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.order_id == order.id,
+            Payment.is_refund.is_(False),
+        )
+    )
+    refund_result = await db.execute(
+        select(func.coalesce(func.sum(-Payment.amount), 0)).where(
+            Payment.order_id == order.id,
+            Payment.is_refund.is_(True),
+        )
+    )
+    net_paid = float(charge_result.scalar()) - float(refund_result.scalar())
+
+    if net_paid > 0:
+        db.add(
+            Payment(
+                id=uuid.uuid4(),
+                order_id=order.id,
+                payment_method="refund",
+                amount=-abs(net_paid),
+                is_refund=True,
+                reference=f"Auto refund on cancellation: {reason}",
+            )
+        )
+
     order.status = "cancelled"
     order.cancel_reason = reason
     order.cancelled_by = cancelled_by
     order.cancelled_at = datetime.now(timezone.utc)
     order.updated_at = datetime.now(timezone.utc)
+    await _recalculate_payment_state(db, order)
     await db.flush()
     return order
 
@@ -195,16 +225,40 @@ def _is_fulfillment_completed(order: Order) -> bool:
 
 
 async def _recalculate_payment_state(db: AsyncSession, order: Order) -> None:
-    """Recompute order payment status from all non-refund payments."""
-    pay_result = await db.execute(
+    """Recompute order payment status from charges and refunds."""
+    charge_result = await db.execute(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(
             Payment.order_id == order.id,
             Payment.is_refund.is_(False),
         )
     )
-    total_paid = float(pay_result.scalar())
+    refund_result = await db.execute(
+        select(func.coalesce(func.sum(-Payment.amount), 0)).where(
+            Payment.order_id == order.id,
+            Payment.is_refund.is_(True),
+        )
+    )
 
-    if total_paid >= float(order.net_amount):
+    total_charged = float(charge_result.scalar())
+    total_refunded = float(refund_result.scalar())
+    net_paid = total_charged - total_refunded
+
+    if total_charged <= 0 and total_refunded <= 0:
+        order.payment_status = "pending"
+        if order.status == "paid":
+            order.status = "completed"
+            order.updated_at = datetime.now(timezone.utc)
+        return
+
+    # Fully refunded payments should be explicitly filterable in sales reports.
+    if total_refunded > 0 and net_paid <= 0:
+        order.payment_status = "refunded"
+        if order.status == "paid":
+            order.status = "completed"
+            order.updated_at = datetime.now(timezone.utc)
+        return
+
+    if net_paid >= float(order.net_amount):
         order.payment_status = "completed"
         # Mark fully settled only when fulfillment is actually finished.
         if order.status == "completed" or (
@@ -212,7 +266,7 @@ async def _recalculate_payment_state(db: AsyncSession, order: Order) -> None:
         ):
             order.status = "paid"
             order.updated_at = datetime.now(timezone.utc)
-    elif total_paid > 0:
+    elif net_paid > 0:
         order.payment_status = "partial"
         # If a paid order gets edited below full amount, roll back paid state.
         if order.status == "paid":
@@ -287,13 +341,16 @@ async def update_payment(
 
 
 async def create_refund(db: AsyncSession, payload: RefundRequest) -> Payment:
+    original_payment_result = await db.execute(
+        select(Payment).where(Payment.id == payload.payment_id)
+    )
+    original_payment = original_payment_result.scalar_one_or_none()
+    if not original_payment:
+        raise ValueError("Original payment not found")
+
     refund = Payment(
         id=uuid.uuid4(),
-        order_id=(
-            await db.execute(
-                select(Payment.order_id).where(Payment.id == payload.payment_id)
-            )
-        ).scalar_one(),
+        order_id=original_payment.order_id,
         payment_method="refund",
         amount=-abs(float(payload.amount)),
         is_refund=True,
@@ -302,6 +359,13 @@ async def create_refund(db: AsyncSession, payload: RefundRequest) -> Payment:
     )
     db.add(refund)
     await db.flush()
+
+    order_result = await db.execute(select(Order).where(Order.id == refund.order_id))
+    order = order_result.scalar_one_or_none()
+    if order:
+        await _recalculate_payment_state(db, order)
+        await db.flush()
+
     return refund
 
 
@@ -341,6 +405,7 @@ async def add_order_item(
         id=uuid.uuid4(),
         order_id=order.id,
         product_id=payload.product_id,
+        product_name=product.name if product else "",
         quantity=payload.quantity,
         price=float(payload.price),
         tax_amount=float(item_tax),

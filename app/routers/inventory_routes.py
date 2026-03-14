@@ -225,6 +225,24 @@ async def api_create_transfer(
     return result.scalar_one()
 
 
+@router.get("/transfers", response_model=list[StockTransferResponse])
+async def api_list_transfers(
+    store_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(StockTransfer)
+        .options(selectinload(StockTransfer.lines))
+        .where(
+            (StockTransfer.from_store_id == store_id)
+            | (StockTransfer.to_store_id == store_id)
+        )
+        .order_by(StockTransfer.created_at.desc())
+    )
+    return result.scalars().unique().all()
+
+
 @router.put("/transfers/{transfer_id}/status", response_model=StockTransferResponse)
 async def api_update_transfer_status(
     transfer_id: UUID,

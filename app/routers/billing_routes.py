@@ -127,7 +127,7 @@ async def api_list_invoices(
     result = await db.execute(
         select(Invoice)
         .where(Invoice.store_id == store_id)
-        .order_by(Invoice.created_at.desc())
+        .order_by(Invoice.issued_at.desc())
         .limit(limit)
         .offset(offset)
     )

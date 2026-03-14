@@ -31,12 +31,56 @@ from app.utils.auth import get_current_user
 router = APIRouter(prefix="/shifts", tags=["Shifts"])
 
 
+# ── Day Close (must be before /{shift_id} to avoid route conflict) ────
+
+@router.post("/day-close", response_model=DayCloseResponse, status_code=status.HTTP_201_CREATED)
+async def api_generate_day_close(
+    payload: DayCloseCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await generate_day_close(db, payload.store_id, payload.business_date, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/day-close", response_model=list[DayCloseResponse])
+async def api_list_day_closes(
+    store_id: UUID = Query(...),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    q = select(DayClose).where(DayClose.store_id == store_id)
+    if start_date:
+        q = q.where(DayClose.business_date >= start_date)
+    if end_date:
+        q = q.where(DayClose.business_date <= end_date)
+    q = q.order_by(DayClose.business_date.desc())
+    result = await db.execute(q)
+    return result.scalars().all()
+
+
 @router.post("", response_model=ShiftResponse, status_code=status.HTTP_201_CREATED)
 async def api_open_shift(
     payload: ShiftOpen,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    # Prevent duplicate open shifts for the same employee
+    existing = await db.execute(
+        select(Shift).where(
+            Shift.employee_id == payload.employee_id,
+            Shift.status == "open",
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Employee already has an open shift",
+        )
     shift = await open_shift(db, payload)
     return await get_shift(db, shift.id)
 
@@ -89,35 +133,3 @@ async def api_close_shift(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return await get_shift(db, shift.id)
-
-
-# ── Day Close ─────────────────────────────────────────────────────────────
-
-@router.post("/day-close", response_model=DayCloseResponse, status_code=status.HTTP_201_CREATED)
-async def api_generate_day_close(
-    payload: DayCloseCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        return await generate_day_close(db, payload.store_id, payload.business_date, current_user.id)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.get("/day-close", response_model=list[DayCloseResponse])
-async def api_list_day_closes(
-    store_id: UUID = Query(...),
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    q = select(DayClose).where(DayClose.store_id == store_id)
-    if start_date:
-        q = q.where(DayClose.business_date >= start_date)
-    if end_date:
-        q = q.where(DayClose.business_date <= end_date)
-    q = q.order_by(DayClose.business_date.desc())
-    result = await db.execute(q)
-    return result.scalars().all()

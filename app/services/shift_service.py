@@ -45,11 +45,25 @@ async def close_shift(db: AsyncSession, shift: Shift, payload: ShiftClose) -> Sh
     result = await db.execute(order_q)
     total_sales, total_orders = result.one()
 
+    # Aggregate only cash payments for expected_cash calculation
+    cash_q = (
+        select(func.coalesce(func.sum(Payment.amount), 0))
+        .join(Order, Payment.order_id == Order.id)
+        .where(
+            Order.shift_id == shift.id,
+            Order.status != "cancelled",
+            Payment.payment_method == "cash",
+            Payment.is_refund.is_(False),
+        )
+    )
+    cash_result = await db.execute(cash_q)
+    total_cash_sales = cash_result.scalar()
+
     closing_cash = Decimal(str(payload.closing_cash))
     shift.closing_cash = closing_cash
     shift.total_sales = Decimal(str(total_sales))
     shift.total_orders = int(total_orders)
-    shift.expected_cash = shift.opening_cash + Decimal(str(total_sales))
+    shift.expected_cash = shift.opening_cash + Decimal(str(total_cash_sales))
     shift.cash_variance = closing_cash - shift.expected_cash
     shift.notes = payload.notes or shift.notes
     shift.status = "closed"
