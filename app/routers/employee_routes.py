@@ -1,9 +1,7 @@
 """
 Employee routes.
 
-POST /employees           → add an employee to a store
-GET  /employees           → list employees for a store
-POST /employees/pin-login → employee PIN authentication
+Managed by Admin (owner).
 """
 
 from uuid import UUID
@@ -13,48 +11,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.stores import Employee
+from app.models.stores import Employee, Store
 from app.models.users import User
 from app.schemas.user_schema import (
     EmployeeCreate,
     EmployeeUpdate,
     EmployeeResponse,
-    EmployeePinLoginRequest,
-    EmployeePinLoginResponse,
 )
-from app.services.auth_service import authenticate_employee_pin
 from app.utils.auth import get_current_user
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
-
-@router.post(
-    "/pin-login",
-    response_model=EmployeePinLoginResponse,
-    summary="Employee PIN login",
-    responses={
-        401: {"description": "Invalid employee code or PIN"},
-        403: {"description": "Employee account is inactive"},
-    },
-)
-async def employee_pin_login(
-    payload: EmployeePinLoginRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Authenticate an employee using their employee code and PIN.
-
-    Returns a JWT token scoped to the employee and store.
-    """
-    result = await authenticate_employee_pin(
-        employee_code=payload.employee_code,
-        pin=payload.pin,
-        store_id=payload.store_id,
-        db=db,
+async def verify_store_ownership(store_id: UUID, current_user: User, db: AsyncSession):
+    store_result = await db.execute(
+        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
     )
-    return EmployeePinLoginResponse(**result)
-
+    if not store_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
 
 @router.post(
     "",
@@ -63,12 +37,15 @@ async def employee_pin_login(
     summary="Add an employee to a store",
 )
 async def add_employee(
+    store_id: UUID,
     payload: EmployeeCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    
     employee = Employee(
-        store_id=payload.store_id,
+        store_id=store_id,
         name=payload.name,
         employee_code=payload.employee_code,
         pin=hash_password(payload.pin),
@@ -88,10 +65,12 @@ async def add_employee(
     summary="List employees for a given store",
 )
 async def list_employees(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    
     result = await db.execute(
         select(Employee)
         .where(Employee.store_id == store_id)
@@ -106,12 +85,15 @@ async def list_employees(
     summary="Update employee details or active status",
 )
 async def update_employee(
+    store_id: UUID,
     employee_id: UUID,
     payload: EmployeeUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    await verify_store_ownership(store_id, current_user, db)
+    
+    result = await db.execute(select(Employee).where(Employee.id == employee_id, Employee.store_id == store_id))
     employee = result.scalar_one_or_none()
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")

@@ -158,6 +158,27 @@ class Employee(Base):
     )
 
 
+# ── Employee Session ────────────────────────────────────────────────────────
+
+class EmployeeSession(Base):
+    __tablename__ = "employee_sessions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    terminal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("pos_terminals.id", ondelete="CASCADE"), nullable=False)
+    token_jti: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    login_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    logout_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    employee = relationship("Employee")
+    terminal = relationship("POSTerminal")
+
+    __table_args__ = (
+        Index("ix_employee_sessions_employee_id", "employee_id"),
+        Index("ix_employee_sessions_terminal_id", "terminal_id"),
+    )
+
+
 # ── Expense ───────────────────────────────────────────────────────────────
 
 class Expense(Base):

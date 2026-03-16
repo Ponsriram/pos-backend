@@ -6,6 +6,7 @@ from app.routers import (  # noqa: F401
     employee_routes,
     product_routes,
     order_routes,
+    kot_routes,
     analytics_routes,
     menu_routes,
     inventory_routes,
@@ -24,4 +25,7 @@ from app.routers import (  # noqa: F401
     notification_routes,
     zone_routes,
     report_routes,
+    terminal_routes,
+    expense_routes,
+    kitchen_routes,
 )

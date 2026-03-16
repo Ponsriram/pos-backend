@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.stores import Store, POSTerminal, Expense
+from app.models.stores import Store
 from app.models.users import User
 from app.schemas.user_schema import (
     StoreCreate,
@@ -30,10 +30,6 @@ from app.schemas.user_schema import (
     StoreResponse,
     StoreTablesResponse,
     TableLabel,
-    POSTerminalCreate,
-    POSTerminalResponse,
-    ExpenseCreate,
-    ExpenseResponse,
 )
 from app.utils.auth import get_current_user
 
@@ -161,64 +157,4 @@ async def get_store_tables(
     )
 
 
-# ── POS Terminal ──────────────────────────────────────────────────────────
 
-@router.post(
-    "/terminals",
-    response_model=POSTerminalResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a POS terminal device",
-)
-async def create_terminal(
-    payload: POSTerminalCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    terminal = POSTerminal(
-        store_id=payload.store_id,
-        device_name=payload.device_name,
-        device_identifier=payload.device_identifier,
-    )
-    db.add(terminal)
-    await db.flush()
-    return terminal
-
-
-# ── Expenses ──────────────────────────────────────────────────────────────
-
-@router.post(
-    "/expenses",
-    response_model=ExpenseResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Record a store expense",
-)
-async def create_expense(
-    payload: ExpenseCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    expense = Expense(
-        store_id=payload.store_id,
-        title=payload.title,
-        amount=float(payload.amount),
-        category=payload.category,
-    )
-    db.add(expense)
-    await db.flush()
-    return expense
-
-
-@router.get(
-    "/expenses",
-    response_model=list[ExpenseResponse],
-    summary="List expenses for a store",
-)
-async def list_expenses(
-    store_id: UUID = Query(...),
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    result = await db.execute(
-        select(Expense).where(Expense.store_id == store_id).order_by(Expense.created_at.desc())
-    )
-    return result.scalars().all()

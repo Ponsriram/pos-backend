@@ -336,13 +336,14 @@ class TestDeviceTokens:
 class TestOutOfStockToggle:
     async def test_list_out_of_stock_empty(self, client: AsyncClient):
         store = await _create_store(client)
-        resp = await client.get(f"/inventory/out-of-stock?store_id={store['id']}")
+        resp = await client.get(f"/stores/{store['id']}/inventory/out-of-stock")
         assert resp.status_code == 200
         assert resp.json() == []
 
     async def test_toggle_not_found(self, client: AsyncClient):
+        store = await _create_store(client)
         resp = await client.put(
-            f"/inventory/items/{uuid.uuid4()}/availability",
+            f"/stores/{store['id']}/inventory/items/{uuid.uuid4()}/availability",
             json={"is_active": False},
         )
         assert resp.status_code == 404

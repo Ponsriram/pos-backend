@@ -2,44 +2,28 @@
 Employee PIN authentication service.
 
 Provides `authenticate_employee_pin()` which verifies an employee's
-code + PIN against the database and returns a signed JWT with
-employee-specific claims.
+code + PIN against the database, creates an EmployeeSession,
+and returns a signed JWT with employee-specific claims.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+import uuid
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from jose import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.models.stores import Employee
+from app.models.stores import Employee, EmployeeSession
 from app.utils.security import verify_password
-
-settings = get_settings()
-
-EMPLOYEE_TOKEN_EXPIRE_HOURS = 8
-
-
-def _create_employee_token(employee_id: UUID, store_id: UUID) -> str:
-    """Create a JWT containing employee-specific claims."""
-    expire = datetime.now(timezone.utc) + timedelta(hours=EMPLOYEE_TOKEN_EXPIRE_HOURS)
-    payload = {
-        "sub": str(employee_id),
-        "employee_id": str(employee_id),
-        "store_id": str(store_id),
-        "type": "employee",
-        "exp": expire,
-    }
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+from app.utils.auth import create_employee_token
 
 
 async def authenticate_employee_pin(
     employee_code: str,
     pin: str,
     store_id: UUID,
+    terminal_id: UUID,
     db: AsyncSession,
 ) -> dict:
     """
@@ -49,12 +33,9 @@ async def authenticate_employee_pin(
       1. Query employee by employee_code and store_id
       2. Verify bcrypt PIN hash
       3. Check active status
-      4. Generate JWT token
-      5. Return token + employee details
-
-    Raises:
-        HTTPException 401 – employee not found or invalid PIN
-        HTTPException 403 – employee account is inactive
+      4. Generate EmployeeSession
+      5. Generate JWT token
+      6. Return token + employee details
     """
     result = await db.execute(
         select(Employee).where(
@@ -82,12 +63,30 @@ async def authenticate_employee_pin(
             detail="Employee account is inactive",
         )
 
-    access_token = _create_employee_token(employee.id, employee.store_id)
+    # Create session
+    jti = str(uuid.uuid4())
+    session = EmployeeSession(
+        employee_id=employee.id,
+        terminal_id=terminal_id,
+        token_jti=jti,
+        is_active=True,
+    )
+    db.add(session)
+    await db.flush()
+
+    access_token = create_employee_token(
+        employee_id=employee.id,
+        store_id=employee.store_id,
+        terminal_id=terminal_id,
+        role=employee.role,
+        jti=jti
+    )
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "employee_id": employee.id,
         "employee_name": employee.name,
+        "role": employee.role,
         "store_id": employee.store_id,
     }

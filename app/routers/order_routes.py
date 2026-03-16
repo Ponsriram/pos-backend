@@ -1,37 +1,25 @@
 """
 Order, Payment, and Sync routes.
 
-POST   /orders                    → create order
-GET    /orders                    → list orders (store_id, filters)
-GET    /orders/{id}               → get single order
-PUT    /orders/{id}               → update order (add/remove items)
-PUT    /orders/{id}/status        → advance order status
-PUT    /orders/{id}/cancel        → cancel order
-PUT    /orders/{id}/transfer      → transfer table/waiter
-POST   /orders/payments           → record a payment
-PUT    /orders/payments/{id}      → edit a payment
-POST   /orders/payments/refund    → issue refund
-POST   /sync/orders               → bulk-sync offline orders
-POST   /sync/payments             → bulk-sync offline payments
+Requires Employee Session context.
 """
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Path
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.orders import Order, Payment
-from app.models.billing import KOT
+from app.models.stores import Store
 from app.models.users import User
 from app.schemas.order_schema import (
     OrderCreate,
     OrderResponse,
     OrderItemResponse,
     OrderStatusUpdate,
-    OrderCancelRequest,
     OrderTransferRequest,
     OrderAddItemRequest,
     OrderUpdateItemRequest,
@@ -47,7 +35,6 @@ from app.schemas.billing_schema import KOTResponse
 from app.services.order_service import (
     create_order,
     update_order_status,
-    cancel_order,
     transfer_order,
     add_order_item,
     update_order_item,
@@ -58,9 +45,21 @@ from app.services.order_service import (
 )
 from app.services.billing_service import create_kot, get_kot
 from app.services.sync_service import sync_orders, sync_payments
-from app.utils.auth import get_current_user
+from app.utils.auth import (
+    get_current_employee, 
+    EmployeeContext, 
+    get_current_user,
+    get_current_user_or_employee
+)
 
-router = APIRouter(tags=["Orders"])
+router = APIRouter(prefix="", tags=["Orders"])
+
+def validate_store_access(store_id: UUID, ctx: EmployeeContext):
+    if store_id != ctx.store_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Employee token does not match the requested store"
+        )
 
 
 # ── Create order ──────────────────────────────────────────────────────────
@@ -72,59 +71,21 @@ router = APIRouter(tags=["Orders"])
     summary="Create a new order with line items",
 )
 async def api_create_order(
+    store_id: UUID,
     payload: OrderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
+    payload.store_id = store_id
+    payload.employee_id = ctx.employee.id
+    payload.terminal_id = ctx.terminal_id
+    
     order = await create_order(db, payload)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order.id)
     )
     return result.scalar_one()
-
-
-# ── Get single order ─────────────────────────────────────────────────────
-
-@router.get(
-    "/orders/{order_id}",
-    response_model=OrderResponse,
-    summary="Get a single order by ID",
-)
-async def get_order(
-    order_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
-    )
-    order = result.scalar_one_or_none()
-    if not order:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    return order
-
-
-@router.get(
-    "/orders/{order_id}/payments",
-    response_model=list[PaymentResponse],
-    summary="List payments recorded for an order",
-)
-async def get_order_payments(
-    order_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    order_result = await db.execute(select(Order.id).where(Order.id == order_id))
-    if not order_result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-
-    result = await db.execute(
-        select(Payment)
-        .where(Payment.order_id == order_id)
-        .order_by(Payment.paid_at.desc())
-    )
-    return result.scalars().all()
-
 
 # ── List orders ───────────────────────────────────────────────────────────
 
@@ -134,7 +95,7 @@ async def get_order_payments(
     summary="List orders for a store with optional filters",
 )
 async def list_orders(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     payment_status: str | None = Query(None),
     order_status: str | None = Query(None, alias="status"),
     order_type: str | None = Query(None),
@@ -142,8 +103,17 @@ async def list_orders(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
+    if isinstance(actor, EmployeeContext):
+        validate_store_access(store_id, actor)
+    else:
+        store_result = await db.execute(
+            select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
+        )
+        if not store_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
+    
     query = (
         select(Order)
         .options(selectinload(Order.items))
@@ -163,53 +133,84 @@ async def list_orders(
     return result.scalars().unique().all()
 
 
+# ── Get single order ─────────────────────────────────────────────────────
+
+@router.get(
+    "/orders/{order_id}",
+    response_model=OrderResponse,
+    summary="Get a single order by ID",
+)
+async def get_order(
+    store_id: UUID,
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
+):
+    if isinstance(actor, EmployeeContext):
+        validate_store_access(store_id, actor)
+    else:
+        store_result = await db.execute(
+            select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
+        )
+        if not store_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
+
+    result = await db.execute(
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    return order
+
+
+@router.get(
+    "/orders/{order_id}/payments",
+    response_model=list[PaymentResponse],
+    summary="List payments recorded for an order",
+)
+async def get_order_payments(
+    store_id: UUID,
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: EmployeeContext = Depends(get_current_employee),
+):
+    validate_store_access(store_id, ctx)
+    order_result = await db.execute(select(Order.id).where(Order.id == order_id, Order.store_id == store_id))
+    if not order_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    result = await db.execute(
+        select(Payment)
+        .where(Payment.order_id == order_id)
+        .order_by(Payment.paid_at.desc())
+    )
+    return result.scalars().all()
+
+
 # ── Update order status ──────────────────────────────────────────────────
 
 @router.put(
     "/orders/{order_id}/status",
     response_model=OrderResponse,
-    summary="Advance order through its lifecycle",
+    summary="Advance order through its lifecycle using status (including cancel)",
 )
 async def api_update_order_status(
+    store_id: UUID,
     order_id: UUID,
     payload: OrderStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     try:
         order = await update_order_status(db, order, payload.status)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return order
-
-
-# ── Cancel order ──────────────────────────────────────────────────────────
-
-@router.put(
-    "/orders/{order_id}/cancel",
-    response_model=OrderResponse,
-    summary="Cancel an order",
-)
-async def api_cancel_order(
-    order_id: UUID,
-    payload: OrderCancelRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
-    )
-    order = result.scalar_one_or_none()
-    if not order:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    try:
-        order = await cancel_order(db, order, payload.reason, current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return order
@@ -223,13 +224,15 @@ async def api_cancel_order(
     summary="Transfer order to another table or waiter",
 )
 async def api_transfer_order(
+    store_id: UUID,
     order_id: UUID,
     payload: OrderTransferRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -247,13 +250,15 @@ async def api_transfer_order(
     summary="Add an item to an existing order",
 )
 async def api_add_order_item(
+    store_id: UUID,
     order_id: UUID,
     payload: OrderAddItemRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -273,14 +278,16 @@ async def api_add_order_item(
     summary="Update quantity or notes of an order item",
 )
 async def api_update_order_item(
+    store_id: UUID,
     order_id: UUID,
     item_id: UUID,
     payload: OrderUpdateItemRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -300,13 +307,15 @@ async def api_update_order_item(
     summary="Remove an item from an order (before it is sent to kitchen)",
 )
 async def api_delete_order_item(
+    store_id: UUID,
     order_id: UUID,
     item_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -327,12 +336,13 @@ async def api_delete_order_item(
     summary="Send unsent order items to kitchen as a new KOT",
 )
 async def api_create_order_kot(
+    store_id: UUID,
     order_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    # Resolve store_id from the order
-    result = await db.execute(select(Order).where(Order.id == order_id))
+    validate_store_access(store_id, ctx)
+    result = await db.execute(select(Order).where(Order.id == order_id, Order.store_id == store_id))
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -346,19 +356,24 @@ async def api_create_order_kot(
 # ── Payment ───────────────────────────────────────────────────────────────
 
 @router.post(
-    "/orders/payments",
+    "/orders/{order_id}/payments",
     response_model=PaymentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Record a payment for an order",
 )
 async def api_create_payment(
+    store_id: UUID,
+    order_id: UUID,
     payload: PaymentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    order_result = await db.execute(select(Order).where(Order.id == payload.order_id))
+    validate_store_access(store_id, ctx)
+    order_result = await db.execute(select(Order).where(Order.id == order_id, Order.store_id == store_id))
     if not order_result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    
+    payload.order_id = order_id
     try:
         return await create_payment(db, payload)
     except ValueError as e:
@@ -366,16 +381,19 @@ async def api_create_payment(
 
 
 @router.put(
-    "/orders/payments/{payment_id}",
+    "/orders/{order_id}/payments/{payment_id}",
     response_model=PaymentResponse,
     summary="Edit a payment for correction",
 )
 async def api_update_payment(
+    store_id: UUID,
+    order_id: UUID,
     payment_id: UUID,
     payload: PaymentUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     try:
         return await update_payment(db, payment_id, payload)
     except ValueError as e:
@@ -388,16 +406,19 @@ async def api_update_payment(
 # ── Refund ────────────────────────────────────────────────────────────────
 
 @router.post(
-    "/orders/payments/refund",
+    "/orders/{order_id}/payments/refund",
     response_model=PaymentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Issue a refund against a payment",
 )
 async def api_create_refund(
+    store_id: UUID,
+    order_id: UUID,
     payload: RefundRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     try:
         return await create_refund(db, payload)
     except ValueError as e:
@@ -415,10 +436,13 @@ async def api_create_refund(
     summary="Bulk-sync orders from an offline POS device",
 )
 async def api_sync_orders(
+    store_id: UUID,
     payload: SyncOrdersRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
+    # Could potentially force payload orders store_id = store_id here
     return await sync_orders(db, payload.orders)
 
 
@@ -430,8 +454,10 @@ async def api_sync_orders(
     summary="Bulk-sync payments from an offline POS device",
 )
 async def api_sync_payments(
+    store_id: UUID,
     payload: SyncPaymentsRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     return await sync_payments(db, payload.payments)

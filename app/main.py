@@ -20,7 +20,6 @@ from app.routers import (
     employee_routes,
     product_routes,
     order_routes,
-    kitchen_routes,
     analytics_routes,
     menu_routes,
     inventory_routes,
@@ -39,6 +38,10 @@ from app.routers import (
     notification_routes,
     zone_routes,
     report_routes,
+    terminal_routes,
+    expense_routes,
+    kot_routes,
+    kitchen_routes,
 )
 
 settings = get_settings()
@@ -100,6 +103,7 @@ app.include_router(store_routes.router)
 app.include_router(employee_routes.router)
 app.include_router(product_routes.router)
 app.include_router(order_routes.router)
+app.include_router(kot_routes.router)
 app.include_router(kitchen_routes.router)
 app.include_router(analytics_routes.router)
 app.include_router(menu_routes.router)
@@ -119,6 +123,8 @@ app.include_router(group_routes.router)
 app.include_router(notification_routes.router)
 app.include_router(zone_routes.router)
 app.include_router(report_routes.router)
+app.include_router(terminal_routes.router)
+app.include_router(expense_routes.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────

@@ -1,13 +1,7 @@
 """
 Product & Category routes.
 
-POST   /products/categories              → create a category
-GET    /products/categories              → list categories for a store
-DELETE /products/categories/{category_id} → delete a category
-POST   /products                          → create a product
-GET    /products                          → list products for a store
-PUT    /products/{id}                     → update a product
-DELETE /products/{id}                     → delete a product
+Managed by Admin (owner).
 """
 
 from uuid import UUID
@@ -31,6 +25,13 @@ from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
+async def verify_store_ownership(store_id: UUID, current_user: User, db: AsyncSession):
+    store_result = await db.execute(
+        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
+    )
+    if not store_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
+
 
 # ── Categories ────────────────────────────────────────────────────────────
 
@@ -41,11 +42,14 @@ router = APIRouter(prefix="/products", tags=["Products"])
     summary="Create a product category",
 )
 async def create_category(
+    store_id: UUID,
     payload: CategoryCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    category = Category(store_id=payload.store_id, name=payload.name)
+    await verify_store_ownership(store_id, current_user, db)
+    
+    category = Category(store_id=store_id, name=payload.name)
     db.add(category)
     await db.flush()
     return category
@@ -57,10 +61,12 @@ async def create_category(
     summary="List categories for a store",
 )
 async def list_categories(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    
     result = await db.execute(
         select(Category)
         .where(Category.store_id == store_id)
@@ -80,6 +86,7 @@ async def list_categories(
     },
 )
 async def delete_category(
+    store_id: UUID,
     category_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -90,23 +97,15 @@ async def delete_category(
     - The category must belong to a store owned by the authenticated user.
     - Deletion is blocked if any products are still linked to the category.
     """
+    await verify_store_ownership(store_id, current_user, db)
+    
     # Fetch category
-    result = await db.execute(select(Category).where(Category.id == category_id))
+    result = await db.execute(select(Category).where(Category.id == category_id, Category.store_id == store_id))
     category = result.scalar_one_or_none()
     if not category:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Category not found",
-        )
-
-    # Verify store ownership
-    store_result = await db.execute(
-        select(Store).where(Store.id == category.store_id, Store.owner_id == current_user.id)
-    )
-    if not store_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorised to delete this category",
         )
 
     # Check for active dependent products
@@ -136,12 +135,15 @@ async def delete_category(
     summary="Create a new product",
 )
 async def create_product(
+    store_id: UUID,
     payload: ProductCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    
     product = Product(
-        store_id=payload.store_id,
+        store_id=store_id,
         category_id=payload.category_id,
         name=payload.name,
         description=payload.description,
@@ -160,12 +162,13 @@ async def create_product(
     summary="List products for a store (optionally filter by category)",
 )
 async def list_products(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     category_id: UUID | None = Query(None),
     active_only: bool = Query(True),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     query = select(Product).where(Product.store_id == store_id)
     if category_id:
         query = query.where(Product.category_id == category_id)
@@ -183,12 +186,15 @@ async def list_products(
     summary="Update an existing product",
 )
 async def update_product(
+    store_id: UUID,
     product_id: UUID,
     payload: ProductUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Product).where(Product.id == product_id))
+    await verify_store_ownership(store_id, current_user, db)
+    
+    result = await db.execute(select(Product).where(Product.id == product_id, Product.store_id == store_id))
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
@@ -211,31 +217,19 @@ async def update_product(
     },
 )
 async def delete_product(
+    store_id: UUID,
     product_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Permanently delete a product from the database.
-
-    The product must belong to a store owned by the authenticated user.
-    """
-    result = await db.execute(select(Product).where(Product.id == product_id))
+    await verify_store_ownership(store_id, current_user, db)
+    
+    result = await db.execute(select(Product).where(Product.id == product_id, Product.store_id == store_id))
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
-        )
-
-    # Verify store ownership
-    store_result = await db.execute(
-        select(Store).where(Store.id == product.store_id, Store.owner_id == current_user.id)
-    )
-    if not store_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorised to delete this product",
         )
 
     await db.delete(product)

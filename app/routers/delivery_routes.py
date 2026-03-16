@@ -10,24 +10,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.delivery import DeliveryOrderDetails
-from app.models.users import User
+from app.models.orders import Order
 from app.schemas.delivery_schema import (
     DeliveryDetailsCreate,
     DeliveryDetailsUpdate,
     DeliveryStatusUpdate,
     DeliveryDetailsResponse,
 )
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_employee, EmployeeContext
 
-router = APIRouter(prefix="/deliveries", tags=["Deliveries"])
+router = APIRouter(prefix="/stores/{store_id}/deliveries", tags=["Deliveries"])
+
+def validate_store_access(store_id: UUID, ctx: EmployeeContext):
+    if store_id != ctx.store_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Employee token does not match the requested store"
+        )
 
 
 @router.post("", response_model=DeliveryDetailsResponse, status_code=status.HTTP_201_CREATED)
 async def create_delivery(
+    store_id: UUID,
     payload: DeliveryDetailsCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
+    
+    # Must verify the associated order belongs to the store
+    order_res = await db.execute(select(Order).where(Order.id == payload.order_id, Order.store_id == store_id))
+    if not order_res.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found for delivery")
+        
     import uuid as _uuid
     delivery = DeliveryOrderDetails(id=_uuid.uuid4(), **payload.model_dump())
     db.add(delivery)
@@ -35,14 +50,18 @@ async def create_delivery(
     return delivery
 
 
-@router.get("/{order_id}", response_model=DeliveryDetailsResponse)
+@router.get("/{delivery_id}", response_model=DeliveryDetailsResponse)
 async def get_delivery(
-    order_id: UUID,
+    store_id: UUID,
+    delivery_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(DeliveryOrderDetails).where(DeliveryOrderDetails.order_id == order_id)
+        select(DeliveryOrderDetails)
+        .join(Order, Order.id == DeliveryOrderDetails.order_id)
+        .where(DeliveryOrderDetails.id == delivery_id, Order.store_id == store_id)
     )
     delivery = result.scalar_one_or_none()
     if not delivery:
@@ -50,15 +69,19 @@ async def get_delivery(
     return delivery
 
 
-@router.put("/{order_id}", response_model=DeliveryDetailsResponse)
+@router.put("/{delivery_id}", response_model=DeliveryDetailsResponse)
 async def update_delivery(
-    order_id: UUID,
+    store_id: UUID,
+    delivery_id: UUID,
     payload: DeliveryDetailsUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(DeliveryOrderDetails).where(DeliveryOrderDetails.order_id == order_id)
+        select(DeliveryOrderDetails)
+        .join(Order, Order.id == DeliveryOrderDetails.order_id)
+        .where(DeliveryOrderDetails.id == delivery_id, Order.store_id == store_id)
     )
     delivery = result.scalar_one_or_none()
     if not delivery:
@@ -69,15 +92,19 @@ async def update_delivery(
     return delivery
 
 
-@router.put("/{order_id}/status", response_model=DeliveryDetailsResponse)
+@router.put("/{delivery_id}/status", response_model=DeliveryDetailsResponse)
 async def update_delivery_status(
-    order_id: UUID,
+    store_id: UUID,
+    delivery_id: UUID,
     payload: DeliveryStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
+    validate_store_access(store_id, ctx)
     result = await db.execute(
-        select(DeliveryOrderDetails).where(DeliveryOrderDetails.order_id == order_id)
+        select(DeliveryOrderDetails)
+        .join(Order, Order.id == DeliveryOrderDetails.order_id)
+        .where(DeliveryOrderDetails.id == delivery_id, Order.store_id == store_id)
     )
     delivery = result.scalar_one_or_none()
     if not delivery:
@@ -90,12 +117,12 @@ async def update_delivery_status(
 
 @router.get("", response_model=list[DeliveryDetailsResponse])
 async def list_deliveries(
-    store_id: UUID = Query(..., description="Not directly on delivery; join via order"),
+    store_id: UUID,
     delivery_status: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    from app.models.orders import Order
+    validate_store_access(store_id, ctx)
     q = (
         select(DeliveryOrderDetails)
         .join(Order, Order.id == DeliveryOrderDetails.order_id)

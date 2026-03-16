@@ -17,7 +17,7 @@ from app.models.billing import KOT
 from app.models.users import User
 from app.schemas.billing_schema import KOTResponse, KOTStatusUpdate
 from app.services.billing_service import update_kot_status, get_kot
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_user_or_employee, EmployeeContext
 
 router = APIRouter(tags=["Kitchen"])
 
@@ -33,7 +33,7 @@ async def list_kitchen_orders(
     store_id: UUID = Query(...),
     kot_status: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
     query = (
         select(KOT)
@@ -63,7 +63,7 @@ async def api_update_kot_status(
     kot_id: UUID,
     payload: KOTStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
     try:
         kot = await update_kot_status(db, kot_id, payload.status)

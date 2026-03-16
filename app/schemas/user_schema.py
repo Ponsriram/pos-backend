@@ -154,6 +154,7 @@ class POSTerminalResponse(BaseModel):
     device_identifier: str
     is_active: bool
     created_at: datetime
+    terminal_token: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -176,6 +177,7 @@ class EmployeePinLoginRequest(BaseModel):
     employee_code: str = Field(..., examples=["EMP001"])
     pin: str = Field(..., examples=["1234"])
     store_id: UUID
+    terminal_id: UUID
 
 
 class EmployeePinLoginResponse(BaseModel):

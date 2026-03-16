@@ -20,6 +20,7 @@ from app.models.inventory import (
     StockTransfer,
 )
 from app.models.users import User
+from app.models.stores import Store
 from app.schemas.inventory_schema import (
     InventoryUnitCreate,
     InventoryUnitResponse,
@@ -51,18 +52,28 @@ from app.services.inventory_service import (
 )
 from app.utils.auth import get_current_user
 
-router = APIRouter(prefix="/inventory", tags=["Inventory"])
+router = APIRouter(prefix="/stores/{store_id}/inventory", tags=["Inventory"])
+
+async def verify_store_ownership(store_id: UUID, current_user: User, db: AsyncSession):
+    store_result = await db.execute(
+        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
+    )
+    if not store_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
 
 
 # ── Units ─────────────────────────────────────────────────────────────────
 
 @router.post("/units", response_model=InventoryUnitResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_unit(
+    store_id: UUID,
     payload: InventoryUnitCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     import uuid as _uuid
+    payload.store_id = store_id # ensure store_id matches
     unit = InventoryUnit(id=_uuid.uuid4(), **payload.model_dump())
     db.add(unit)
     await db.flush()
@@ -71,10 +82,11 @@ async def api_create_unit(
 
 @router.get("/units", response_model=list[InventoryUnitResponse])
 async def api_list_units(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     result = await db.execute(
         select(InventoryUnit).where(InventoryUnit.store_id == store_id)
     )
@@ -85,11 +97,14 @@ async def api_list_units(
 
 @router.post("/locations", response_model=InventoryLocationResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_location(
+    store_id: UUID,
     payload: InventoryLocationCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     import uuid as _uuid
+    payload.store_id = store_id
     loc = InventoryLocation(id=_uuid.uuid4(), **payload.model_dump())
     db.add(loc)
     await db.flush()
@@ -98,10 +113,11 @@ async def api_create_location(
 
 @router.get("/locations", response_model=list[InventoryLocationResponse])
 async def api_list_locations(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     result = await db.execute(
         select(InventoryLocation).where(InventoryLocation.store_id == store_id)
     )
@@ -112,20 +128,24 @@ async def api_list_locations(
 
 @router.post("/items", response_model=InventoryItemResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_item(
+    store_id: UUID,
     payload: InventoryItemCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    payload.store_id = store_id
     return await create_inventory_item(db, payload)
 
 
 @router.get("/items", response_model=list[InventoryItemResponse])
 async def api_list_items(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     active_only: bool = Query(True),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     q = select(InventoryItem).where(InventoryItem.store_id == store_id)
     if active_only:
         q = q.where(InventoryItem.is_active.is_(True))
@@ -136,12 +156,14 @@ async def api_list_items(
 
 @router.put("/items/{item_id}", response_model=InventoryItemResponse)
 async def api_update_item(
+    store_id: UUID,
     item_id: UUID,
     payload: InventoryItemUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(InventoryItem).where(InventoryItem.id == item_id))
+    await verify_store_ownership(store_id, current_user, db)
+    result = await db.execute(select(InventoryItem).where(InventoryItem.id == item_id, InventoryItem.store_id == store_id))
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
@@ -152,10 +174,11 @@ async def api_update_item(
 
 @router.get("/stock", response_model=list[StockLevelResponse])
 async def api_stock_levels(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     return await get_stock_levels(db, store_id)
 
 
@@ -163,10 +186,13 @@ async def api_stock_levels(
 
 @router.post("/stock/adjustments", response_model=StockAdjustmentResponse, status_code=status.HTTP_201_CREATED)
 async def api_adjust_stock(
+    store_id: UUID,
     payload: StockAdjustmentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
+    # Validate payload references elements within this store potentially
     return await adjust_stock(db, payload, adjusted_by=current_user.id)
 
 
@@ -174,33 +200,39 @@ async def api_adjust_stock(
 
 @router.post("/recipes", response_model=RecipeResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_recipe(
+    store_id: UUID,
     payload: RecipeCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     recipe = await create_recipe(db, payload)
     return await get_recipe(db, recipe.id)
 
 
 @router.get("/recipes/{recipe_id}", response_model=RecipeResponse)
 async def api_get_recipe(
+    store_id: UUID,
     recipe_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     recipe = await get_recipe(db, recipe_id)
-    if not recipe:
+    if not recipe: # we might want to check product's store
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipe not found")
     return recipe
 
 
 @router.put("/recipes/{recipe_id}", response_model=RecipeResponse)
 async def api_update_recipe(
+    store_id: UUID,
     recipe_id: UUID,
     payload: RecipeUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     recipe = await get_recipe(db, recipe_id)
     if not recipe:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipe not found")
@@ -212,10 +244,12 @@ async def api_update_recipe(
 
 @router.post("/transfers", response_model=StockTransferResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_transfer(
+    store_id: UUID,
     payload: StockTransferCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     transfer = await create_stock_transfer(db, payload, requested_by=current_user.id)
     result = await db.execute(
         select(StockTransfer)
@@ -227,10 +261,11 @@ async def api_create_transfer(
 
 @router.get("/transfers", response_model=list[StockTransferResponse])
 async def api_list_transfers(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     result = await db.execute(
         select(StockTransfer)
         .options(selectinload(StockTransfer.lines))
@@ -245,11 +280,13 @@ async def api_list_transfers(
 
 @router.put("/transfers/{transfer_id}/status", response_model=StockTransferResponse)
 async def api_update_transfer_status(
+    store_id: UUID,
     transfer_id: UUID,
     payload: StockTransferStatusUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await verify_store_ownership(store_id, current_user, db)
     result = await db.execute(
         select(StockTransfer)
         .options(selectinload(StockTransfer.lines))
@@ -258,6 +295,10 @@ async def api_update_transfer_status(
     transfer = result.scalar_one_or_none()
     if not transfer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer not found")
+    
+    if transfer.from_store_id != store_id and transfer.to_store_id != store_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to transfer")
+
     transfer.status = payload.status
     if payload.status == "approved":
         transfer.approved_by = current_user.id
@@ -284,11 +325,12 @@ class OutOfStockItemResponse(BaseModel):
 
 @router.get("/out-of-stock", response_model=list[OutOfStockItemResponse])
 async def api_list_out_of_stock(
-    store_id: UUID = Query(...),
+    store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """List inventory items currently marked as inactive (out of stock)."""
+    await verify_store_ownership(store_id, current_user, db)
     result = await db.execute(
         select(InventoryItem)
         .where(InventoryItem.store_id == store_id, InventoryItem.is_active.is_(False))
@@ -299,13 +341,15 @@ async def api_list_out_of_stock(
 
 @router.put("/items/{item_id}/availability", response_model=OutOfStockItemResponse)
 async def api_toggle_availability(
+    store_id: UUID,
     item_id: UUID,
     payload: ItemAvailabilityUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """Quick toggle for marking an item in/out of stock."""
-    result = await db.execute(select(InventoryItem).where(InventoryItem.id == item_id))
+    await verify_store_ownership(store_id, current_user, db)
+    result = await db.execute(select(InventoryItem).where(InventoryItem.id == item_id, InventoryItem.store_id == store_id))
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
