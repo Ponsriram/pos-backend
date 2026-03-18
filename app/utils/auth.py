@@ -26,9 +26,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 class EmployeeContext:
     employee_id: UUID
     store_id: UUID
-    terminal_id: UUID
     role: str
-    session_id: UUID
 
 # ── Token helpers ─────────────────────────────────────────────────────────
 
@@ -53,15 +51,13 @@ def create_terminal_token(terminal_id: UUID, store_id: UUID) -> str:
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_employee_token(employee_id: UUID, store_id: UUID, terminal_id: UUID, role: str, jti: str) -> str:
+def create_employee_token(employee_id: UUID, store_id: UUID, role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=8)
     payload = {
         "sub": str(employee_id),
         "store_id": str(store_id),
-        "terminal_id": str(terminal_id),
         "role": role,
         "type": "employee",
-        "jti": jti,
         "exp": expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -124,43 +120,27 @@ async def get_current_terminal(
 
 async def get_current_employee(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
 ) -> EmployeeContext:
     payload = decode_access_token(token)
     if payload.get("type") != "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Employee token required")
-    
     try:
         ctx = EmployeeContext(
             employee_id=UUID(payload["sub"]),
             store_id=UUID(payload["store_id"]),
-            terminal_id=UUID(payload["terminal_id"]),
-            role=payload["role"],
-            session_id=UUID(payload["jti"])
+            role=payload["role"]
         )
     except (KeyError, ValueError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token claims")
-
-    result = await db.execute(select(EmployeeSession).where(
-        EmployeeSession.token_jti == str(ctx.session_id),
-        EmployeeSession.is_active.is_(True)
-    ))
-    session = result.scalar_one_or_none()
-    
-    if not session:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
-        
     return ctx
 
 
-class RoleChecker:
-    def __init__(self, allowed_roles: list[str]):
-        self.allowed_roles = allowed_roles
-
-    def __call__(self, ctx: EmployeeContext = Depends(get_current_employee)):
-        if "admin" not in self.allowed_roles and ctx.role not in self.allowed_roles:
+def require_roles(allowed_roles: list[str]):
+    def role_dependency(ctx: EmployeeContext = Depends(get_current_employee)):
+        if "admin" not in allowed_roles and ctx.role not in allowed_roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
         return ctx
+    return role_dependency
 
 async def get_current_user_or_employee(
     token: str = Depends(oauth2_scheme),
@@ -169,6 +149,6 @@ async def get_current_user_or_employee(
     payload = decode_access_token(token)
     typ = payload.get("type", "admin")
     if typ == "employee":
-        return await get_current_employee(token, db)
+        return await get_current_employee(token)
     else:
         return await get_current_user(token, db)

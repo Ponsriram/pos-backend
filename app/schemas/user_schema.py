@@ -176,8 +176,6 @@ class EmployeeCreate(BaseModel):
 class EmployeePinLoginRequest(BaseModel):
     employee_code: str = Field(..., examples=["EMP001"])
     pin: str = Field(..., examples=["1234"])
-    store_id: UUID
-    terminal_id: UUID
 
 
 class EmployeePinLoginResponse(BaseModel):
@@ -185,6 +183,7 @@ class EmployeePinLoginResponse(BaseModel):
     token_type: str = "bearer"
     employee_id: UUID
     employee_name: str
+    role: str
     store_id: UUID
 
 

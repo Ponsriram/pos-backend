@@ -46,6 +46,7 @@ from app.services.order_service import (
 from app.services.billing_service import create_kot, get_kot
 from app.services.sync_service import sync_orders, sync_payments
 from app.utils.auth import (
+    require_roles,
     get_current_employee, 
     EmployeeContext, 
     get_current_user,
@@ -54,13 +55,14 @@ from app.utils.auth import (
 
 router = APIRouter(prefix="", tags=["Orders"])
 
-def validate_store_access(store_id: UUID, ctx: EmployeeContext):
-    if store_id != ctx.store_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Employee token does not match the requested store"
-        )
-
+def get_target_store(store_id: UUID | None, actor: User | EmployeeContext) -> UUID:
+    if isinstance(actor, EmployeeContext):
+        if store_id and store_id != actor.store_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store access denied")
+        return actor.store_id
+    if not store_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="store_id required for admin")
+    return store_id
 
 # ── Create order ──────────────────────────────────────────────────────────
 
@@ -71,12 +73,12 @@ def validate_store_access(store_id: UUID, ctx: EmployeeContext):
     summary="Create a new order with line items",
 )
 async def api_create_order(
-    store_id: UUID,
     payload: OrderCreate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     payload.store_id = store_id
     payload.employee_id = ctx.employee.id
     payload.terminal_id = ctx.terminal_id
@@ -95,18 +97,18 @@ async def api_create_order(
     summary="List orders for a store with optional filters",
 )
 async def list_orders(
-    store_id: UUID,
     payment_status: str | None = Query(None),
     order_status: str | None = Query(None, alias="status"),
     order_type: str | None = Query(None),
     channel: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
     if isinstance(actor, EmployeeContext):
-        validate_store_access(store_id, actor)
+        store_id = get_target_store(store_id, actor)
     else:
         store_result = await db.execute(
             select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
@@ -141,13 +143,13 @@ async def list_orders(
     summary="Get a single order by ID",
 )
 async def get_order(
-    store_id: UUID,
     order_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
     if isinstance(actor, EmployeeContext):
-        validate_store_access(store_id, actor)
+        store_id = get_target_store(store_id, actor)
     else:
         store_result = await db.execute(
             select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
@@ -170,12 +172,12 @@ async def get_order(
     summary="List payments recorded for an order",
 )
 async def get_order_payments(
-    store_id: UUID,
     order_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     order_result = await db.execute(select(Order.id).where(Order.id == order_id, Order.store_id == store_id))
     if not order_result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -196,13 +198,13 @@ async def get_order_payments(
     summary="Advance order through its lifecycle using status (including cancel)",
 )
 async def api_update_order_status(
-    store_id: UUID,
     order_id: UUID,
     payload: OrderStatusUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
@@ -224,13 +226,13 @@ async def api_update_order_status(
     summary="Transfer order to another table or waiter",
 )
 async def api_transfer_order(
-    store_id: UUID,
     order_id: UUID,
     payload: OrderTransferRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
@@ -250,13 +252,13 @@ async def api_transfer_order(
     summary="Add an item to an existing order",
 )
 async def api_add_order_item(
-    store_id: UUID,
     order_id: UUID,
     payload: OrderAddItemRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
@@ -278,14 +280,14 @@ async def api_add_order_item(
     summary="Update quantity or notes of an order item",
 )
 async def api_update_order_item(
-    store_id: UUID,
     order_id: UUID,
     item_id: UUID,
     payload: OrderUpdateItemRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
@@ -307,13 +309,13 @@ async def api_update_order_item(
     summary="Remove an item from an order (before it is sent to kitchen)",
 )
 async def api_delete_order_item(
-    store_id: UUID,
     order_id: UUID,
     item_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.store_id == store_id)
     )
@@ -336,12 +338,12 @@ async def api_delete_order_item(
     summary="Send unsent order items to kitchen as a new KOT",
 )
 async def api_create_order_kot(
-    store_id: UUID,
     order_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(select(Order).where(Order.id == order_id, Order.store_id == store_id))
     order = result.scalar_one_or_none()
     if not order:
@@ -362,13 +364,13 @@ async def api_create_order_kot(
     summary="Record a payment for an order",
 )
 async def api_create_payment(
-    store_id: UUID,
     order_id: UUID,
     payload: PaymentCreate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     order_result = await db.execute(select(Order).where(Order.id == order_id, Order.store_id == store_id))
     if not order_result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -386,14 +388,14 @@ async def api_create_payment(
     summary="Edit a payment for correction",
 )
 async def api_update_payment(
-    store_id: UUID,
     order_id: UUID,
     payment_id: UUID,
     payload: PaymentUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     try:
         return await update_payment(db, payment_id, payload)
     except ValueError as e:
@@ -412,13 +414,13 @@ async def api_update_payment(
     summary="Issue a refund against a payment",
 )
 async def api_create_refund(
-    store_id: UUID,
     order_id: UUID,
     payload: RefundRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     try:
         return await create_refund(db, payload)
     except ValueError as e:
@@ -436,12 +438,12 @@ async def api_create_refund(
     summary="Bulk-sync orders from an offline POS device",
 )
 async def api_sync_orders(
-    store_id: UUID,
     payload: SyncOrdersRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     # Could potentially force payload orders store_id = store_id here
     return await sync_orders(db, payload.orders)
 
@@ -454,10 +456,10 @@ async def api_sync_orders(
     summary="Bulk-sync payments from an offline POS device",
 )
 async def api_sync_payments(
-    store_id: UUID,
     payload: SyncPaymentsRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     return await sync_payments(db, payload.payments)

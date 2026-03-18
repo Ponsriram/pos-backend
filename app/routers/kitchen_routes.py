@@ -17,7 +17,7 @@ from app.models.billing import KOT
 from app.models.users import User
 from app.schemas.billing_schema import KOTResponse, KOTStatusUpdate
 from app.services.billing_service import update_kot_status, get_kot
-from app.utils.auth import get_current_user_or_employee, EmployeeContext
+from app.utils.auth import get_current_user_or_employee, EmployeeContext, require_roles
 
 router = APIRouter(tags=["Kitchen"])
 
@@ -30,8 +30,8 @@ router = APIRouter(tags=["Kitchen"])
     summary="List active KOTs for kitchen display",
 )
 async def list_kitchen_orders(
-    store_id: UUID = Query(...),
     kot_status: str | None = Query(None, alias="status"),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     _: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
@@ -62,6 +62,7 @@ async def list_kitchen_orders(
 async def api_update_kot_status(
     kot_id: UUID,
     payload: KOTStatusUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     _: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):

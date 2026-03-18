@@ -17,9 +17,9 @@ from app.schemas.delivery_schema import (
     DeliveryStatusUpdate,
     DeliveryDetailsResponse,
 )
-from app.utils.auth import get_current_employee, EmployeeContext
+from app.utils.auth import get_current_employee, EmployeeContext, require_roles
 
-router = APIRouter(prefix="/stores/{store_id}/deliveries", tags=["Deliveries"])
+router = APIRouter(prefix="/stores/deliveries", tags=["Deliveries"])
 
 def validate_store_access(store_id: UUID, ctx: EmployeeContext):
     if store_id != ctx.store_id:
@@ -31,12 +31,12 @@ def validate_store_access(store_id: UUID, ctx: EmployeeContext):
 
 @router.post("", response_model=DeliveryDetailsResponse, status_code=status.HTTP_201_CREATED)
 async def create_delivery(
-    store_id: UUID,
     payload: DeliveryDetailsCreate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     
     # Must verify the associated order belongs to the store
     order_res = await db.execute(select(Order).where(Order.id == payload.order_id, Order.store_id == store_id))
@@ -52,12 +52,12 @@ async def create_delivery(
 
 @router.get("/{delivery_id}", response_model=DeliveryDetailsResponse)
 async def get_delivery(
-    store_id: UUID,
     delivery_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(DeliveryOrderDetails)
         .join(Order, Order.id == DeliveryOrderDetails.order_id)
@@ -71,13 +71,13 @@ async def get_delivery(
 
 @router.put("/{delivery_id}", response_model=DeliveryDetailsResponse)
 async def update_delivery(
-    store_id: UUID,
     delivery_id: UUID,
     payload: DeliveryDetailsUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(DeliveryOrderDetails)
         .join(Order, Order.id == DeliveryOrderDetails.order_id)
@@ -94,13 +94,13 @@ async def update_delivery(
 
 @router.put("/{delivery_id}/status", response_model=DeliveryDetailsResponse)
 async def update_delivery_status(
-    store_id: UUID,
     delivery_id: UUID,
     payload: DeliveryStatusUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(DeliveryOrderDetails)
         .join(Order, Order.id == DeliveryOrderDetails.order_id)
@@ -117,12 +117,12 @@ async def update_delivery_status(
 
 @router.get("", response_model=list[DeliveryDetailsResponse])
 async def list_deliveries(
-    store_id: UUID,
     delivery_status: str | None = Query(None),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     q = (
         select(DeliveryOrderDetails)
         .join(Order, Order.id == DeliveryOrderDetails.order_id)

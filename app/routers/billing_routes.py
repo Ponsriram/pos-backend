@@ -20,28 +20,29 @@ from app.schemas.billing_schema import (
     BillTemplateResponse,
 )
 from app.services.billing_service import generate_invoice
-from app.utils.auth import get_current_employee, EmployeeContext
+from app.utils.auth import get_current_employee, EmployeeContext, require_roles
 
-router = APIRouter(prefix="/stores/{store_id}/billing", tags=["Billing"])
+router = APIRouter(prefix="/stores/billing", tags=["Billing"])
 
-def validate_store_access(store_id: UUID, ctx: EmployeeContext):
-    if store_id != ctx.store_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Employee token does not match the requested store"
-        )
-
+def get_target_store(store_id: UUID | None, actor: User | EmployeeContext) -> UUID:
+    if isinstance(actor, EmployeeContext):
+        if store_id and store_id != actor.store_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store access denied")
+        return actor.store_id
+    if not store_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="store_id required for admin")
+    return store_id
 
 # ── Invoices ──────────────────────────────────────────────────────────────
 
 @router.post("/invoices", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
 async def api_generate_invoice(
-    store_id: UUID,
     payload: InvoiceGenerateRequest,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     try:
         return await generate_invoice(db, payload.order_id)
     except ValueError as e:
@@ -50,12 +51,12 @@ async def api_generate_invoice(
 
 @router.get("/invoices/{invoice_id}", response_model=InvoiceResponse)
 async def api_get_invoice(
-    store_id: UUID,
     invoice_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -65,13 +66,13 @@ async def api_get_invoice(
 
 @router.get("/invoices", response_model=list[InvoiceResponse])
 async def api_list_invoices(
-    store_id: UUID,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(
         select(Invoice)
         .where(Invoice.store_id == store_id)
@@ -86,12 +87,12 @@ async def api_list_invoices(
 
 @router.post("/templates", response_model=BillTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_template(
-    store_id: UUID,
     payload: BillTemplateCreate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     import uuid as _uuid
     tpl = BillTemplate(id=_uuid.uuid4(), **payload.model_dump())
     db.add(tpl)
@@ -101,12 +102,12 @@ async def api_create_template(
 
 @router.get("/templates", response_model=list[BillTemplateResponse])
 async def api_list_templates(
-    store_id: UUID,
     template_type: str | None = Query(None),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     q = select(BillTemplate).where(BillTemplate.store_id == store_id)
     if template_type:
         q = q.where(BillTemplate.template_type == template_type)
@@ -117,13 +118,13 @@ async def api_list_templates(
 
 @router.put("/templates/{template_id}", response_model=BillTemplateResponse)
 async def api_update_template(
-    store_id: UUID,
     template_id: UUID,
     payload: BillTemplateUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     result = await db.execute(select(BillTemplate).where(BillTemplate.id == template_id))
     tpl = result.scalar_one_or_none()
     if not tpl:

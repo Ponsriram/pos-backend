@@ -52,7 +52,7 @@ from app.services.inventory_service import (
 )
 from app.utils.auth import get_current_user
 
-router = APIRouter(prefix="/stores/{store_id}/inventory", tags=["Inventory"])
+router = APIRouter(prefix="/stores/inventory", tags=["Inventory"])
 
 async def verify_store_ownership(store_id: UUID, current_user: User, db: AsyncSession):
     store_result = await db.execute(

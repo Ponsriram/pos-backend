@@ -21,11 +21,15 @@ from app.schemas.product_schema import (
     ProductUpdate,
     ProductResponse,
 )
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_user, get_current_user_or_employee, EmployeeContext
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
-async def verify_store_ownership(store_id: UUID, current_user: User, db: AsyncSession):
+async def verify_store_ownership(store_id: UUID, current_user: User | EmployeeContext, db: AsyncSession):
+    if isinstance(current_user, EmployeeContext):
+        if store_id != current_user.store_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Store not found or access denied")
+        return
     store_result = await db.execute(
         select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
     )
@@ -63,9 +67,9 @@ async def create_category(
 async def list_categories(
     store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
-    await verify_store_ownership(store_id, current_user, db)
+    await verify_store_ownership(store_id, actor, db)
     
     result = await db.execute(
         select(Category)
@@ -166,9 +170,9 @@ async def list_products(
     category_id: UUID | None = Query(None),
     active_only: bool = Query(True),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
-    await verify_store_ownership(store_id, current_user, db)
+    await verify_store_ownership(store_id, actor, db)
     query = select(Product).where(Product.store_id == store_id)
     if category_id:
         query = query.where(Product.category_id == category_id)

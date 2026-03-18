@@ -22,25 +22,21 @@ from app.utils.auth import create_employee_token
 async def authenticate_employee_pin(
     employee_code: str,
     pin: str,
-    store_id: UUID,
-    terminal_id: UUID,
     db: AsyncSession,
 ) -> dict:
     """
     Authenticate an employee by code + PIN.
 
     Steps:
-      1. Query employee by employee_code and store_id
+      1. Query employee by employee_code
       2. Verify bcrypt PIN hash
       3. Check active status
-      4. Generate EmployeeSession
-      5. Generate JWT token
-      6. Return token + employee details
+      4. Generate JWT token
+      5. Return token + employee details
     """
     result = await db.execute(
         select(Employee).where(
-            Employee.employee_code == employee_code,
-            Employee.store_id == store_id,
+            Employee.employee_code == employee_code
         )
     )
     employee = result.scalar_one_or_none()
@@ -63,23 +59,10 @@ async def authenticate_employee_pin(
             detail="Employee account is inactive",
         )
 
-    # Create session
-    jti = str(uuid.uuid4())
-    session = EmployeeSession(
-        employee_id=employee.id,
-        terminal_id=terminal_id,
-        token_jti=jti,
-        is_active=True,
-    )
-    db.add(session)
-    await db.flush()
-
     access_token = create_employee_token(
         employee_id=employee.id,
         store_id=employee.store_id,
-        terminal_id=terminal_id,
         role=employee.role,
-        jti=jti
     )
 
     return {

@@ -18,9 +18,9 @@ from app.schemas.billing_schema import (
     KOTResponse,
 )
 from app.services.billing_service import create_kot, get_kot, update_kot_status
-from app.utils.auth import get_current_employee, EmployeeContext
+from app.utils.auth import get_current_employee, EmployeeContext, require_roles
 
-router = APIRouter(prefix="/stores/{store_id}/kots", tags=["Kitchen Order Tickets (KOT)"])
+router = APIRouter(prefix="/stores/kots", tags=["Kitchen Order Tickets (KOT)"])
 
 def validate_store_access(store_id: UUID, ctx: EmployeeContext):
     if store_id != ctx.store_id:
@@ -32,12 +32,12 @@ def validate_store_access(store_id: UUID, ctx: EmployeeContext):
 
 @router.post("", response_model=KOTResponse, status_code=status.HTTP_201_CREATED)
 async def api_create_kot(
-    store_id: UUID,
     payload: KOTCreate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     payload.store_id = store_id
     try:
         kot = await create_kot(
@@ -50,12 +50,12 @@ async def api_create_kot(
 
 @router.get("/{kot_id}", response_model=KOTResponse)
 async def api_get_kot(
-    store_id: UUID,
     kot_id: UUID,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     kot = await get_kot(db, kot_id)
     if not kot or kot.store_id != store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="KOT not found")
@@ -64,13 +64,13 @@ async def api_get_kot(
 
 @router.get("", response_model=list[KOTResponse], summary="List KOTs for a store")
 async def api_list_kots(
-    store_id: UUID,
     order_id: UUID | None = Query(None),
     kot_status: str | None = Query(None, alias="status"),
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     q = select(KOT).options(selectinload(KOT.items)).where(KOT.store_id == store_id)
     if order_id:
         q = q.where(KOT.order_id == order_id)
@@ -83,13 +83,13 @@ async def api_list_kots(
 
 @router.put("/{kot_id}/status", response_model=KOTResponse)
 async def api_update_kot_status(
-    store_id: UUID,
     kot_id: UUID,
     payload: KOTStatusUpdate,
+    store_id: UUID | None = Query(None, description="Inferred from JWT for employees"),
     db: AsyncSession = Depends(get_db),
     ctx: EmployeeContext = Depends(get_current_employee),
 ):
-    validate_store_access(store_id, ctx)
+    store_id = get_target_store(store_id, ctx)
     kot = await get_kot(db, kot_id)
     if not kot or kot.store_id != store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="KOT not found")

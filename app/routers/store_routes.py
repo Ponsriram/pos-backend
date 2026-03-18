@@ -31,7 +31,7 @@ from app.schemas.user_schema import (
     StoreTablesResponse,
     TableLabel,
 )
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_user, get_current_user_or_employee, EmployeeContext
 
 router = APIRouter(prefix="/stores", tags=["Stores"])
 
@@ -67,11 +67,14 @@ async def create_store(
 )
 async def list_stores(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
-    result = await db.execute(
-        select(Store).where(Store.owner_id == current_user.id).order_by(Store.created_at.desc())
-    )
+    if isinstance(actor, EmployeeContext):
+        result = await db.execute(select(Store).where(Store.id == actor.store_id))
+    else:
+        result = await db.execute(
+            select(Store).where(Store.owner_id == actor.id).order_by(Store.created_at.desc())
+        )
     return result.scalars().all()
 
 
@@ -85,11 +88,16 @@ async def list_stores(
 async def get_store(
     store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
-    result = await db.execute(
-        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
-    )
+    if isinstance(actor, EmployeeContext):
+        if store_id != actor.store_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this store")
+        result = await db.execute(select(Store).where(Store.id == store_id))
+    else:
+        result = await db.execute(
+            select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
+        )
     store = result.scalar_one_or_none()
     if not store:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
@@ -138,11 +146,16 @@ async def update_store(
 async def get_store_tables(
     store_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor: User | EmployeeContext = Depends(get_current_user_or_employee),
 ):
-    result = await db.execute(
-        select(Store).where(Store.id == store_id, Store.owner_id == current_user.id)
-    )
+    if isinstance(actor, EmployeeContext):
+        if store_id != actor.store_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this store")
+        result = await db.execute(select(Store).where(Store.id == store_id))
+    else:
+        result = await db.execute(
+            select(Store).where(Store.id == store_id, Store.owner_id == actor.id)
+        )
     store = result.scalar_one_or_none()
     if not store:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")

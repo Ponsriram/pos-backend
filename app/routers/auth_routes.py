@@ -129,8 +129,6 @@ async def employee_pin_login(
     result = await authenticate_employee_pin(
         employee_code=payload.employee_code,
         pin=payload.pin,
-        store_id=payload.store_id,
-        terminal_id=payload.terminal_id,
         db=db,
     )
     return EmployeePinLoginResponse(**result)
